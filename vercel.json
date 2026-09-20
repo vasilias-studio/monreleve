@@ -5,7 +5,6 @@
   "installCommand": "npm install --omit=dev --omit=optional",
   "functions": {
     "api/index.js": {
-      "runtime": "nodejs20.x",
       "memory": 1024,
       "maxDuration": 30,
       "includeFiles": "{Relev-de-notes.xlsx,client/src/styles.css}"
