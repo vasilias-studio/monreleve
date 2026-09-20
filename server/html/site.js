@@ -569,7 +569,7 @@ r.get('/calendrier', need('student'), H(async (req, res) => {
   if (!sems.length) { res.send(stuPage(req, 'Calendrier', '<div class="empty">Aucun semestre défini pour votre filière.</div>')); return; }
   const cur = sems.find((x) => String(x.id) === String(req.query.sem)) || sems[0];
   const slots = classId ? await db.prepare(`
-      SELECT sl.day AS dday, sl.start, sl.end, sl.room, sl.title,
+      SELECT sl.day AS dday, sl.slot_date, sl.start, sl.end, sl.room, sl.title,
              c.name AS cname, un.code AS ucode
       FROM schedule_slots sl
       LEFT JOIN courses c ON c.id = sl.course_id
@@ -604,7 +604,7 @@ r.get('/calendrier', need('student'), H(async (req, res) => {
     const mon = new Date(monday); mon.setDate(monday.getDate() + (k - centre) * 7);
     const days = WD.map((label, i) => {
       const dd = new Date(mon); dd.setDate(mon.getDate() + i);
-      const list = i === 6 ? [] : (byDay[i + 1] || []);   /* dimanche : pas de cours (repos) */
+      const list = i === 6 ? [] : (byDay[i + 1] || []).filter((sl) => !sl.slot_date || sl.slot_date === iso(dd));   /* anciens créneaux = hebdomadaires ; nouveaux = date réelle */
       const cards = list.map((sl) => {
         const meta = sl.room ? 'Salle ' + sl.room : '';
         return `<div class="calcard"><div class="t">${esc(sl.start)}–${esc(sl.end)}</div><div class="n">${esc(sl.cname || sl.title || 'Cours')}</div>${meta ? `<div class="m">${esc(meta)}</div>` : ''}</div>`;
@@ -1499,68 +1499,154 @@ r.get('/admin/fichiers/releve/:id.xlsx', need('admin'), H(async (req, res) => {
   await sendReleveXlsx(res, s, req.query.source === 'personal' ? 'personal' : 'official');
 }));
 
-/* ---- Admin — emploi du temps par classe et semestre (CRUD simple, PRG) ---- */
+/* ---- Admin — calendrier daté par niveau et groupe ---- */
+const ADMIN_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const adminToday = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+const adminValidDate = (value) => ADMIN_DATE_RE.test(String(value || '')) && !Number.isNaN(new Date(`${value}T12:00:00`).getTime());
+const adminDay = (value) => {
+  const d = new Date(`${value}T12:00:00`);
+  return d.getDay() === 0 ? 0 : d.getDay(); /* dimanche = 0, lundi = 1 … samedi = 6 */
+};
+const adminDateLabel = (value) => new Date(`${value}T12:00:00`).toLocaleDateString('fr-FR', {
+  weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric',
+});
+
 r.get('/admin/emploi', need('admin'), H(async (req, res) => {
-  const classes = await db.prepare('SELECT id, name FROM classes ORDER BY id').all();
-  const sems = await db.prepare('SELECT s.id, s.number, s.name, t.name AS tname FROM semesters s JOIN templates t ON t.id = s.template_id ORDER BY s.id').all();
-  const clazz = Number(req.query.clazz) || classes[0]?.id;
-  const sem = Number(req.query.sem) || sems.find((x) => x.id > 0)?.id;
-  if (!classes.length || !sems.length) { res.send(adminPage(req, 'Calendrier', '<div class="empty">Créez d’abord une classe et un modèle de relevé.</div>')); return; }
-  const rows = await db.prepare(`SELECT sl.*, c.name AS cname FROM schedule_slots sl LEFT JOIN courses c ON c.id = sl.course_id
-    WHERE sl.class_id = ? AND sl.semester_id = ? ORDER BY sl.day, sl.start`).all(clazz, sem);
-  const courses = await db.prepare(`SELECT c.id, c.name, un.code AS ucode FROM courses c JOIN units un ON c.unit_id = un.id
-    WHERE un.semester_id = ? ORDER BY c.id`).all(sem);
-  const cn = classes.find((c) => c.id === clazz);
-  const sn = sems.find((x) => x.id === sem);
-  const filter = `<form class="inline" method="get" action="${url('/admin/emploi', req.ctx)}" style="margin-bottom:12px">
-    <div class="field" style="min-width:180px"><label>Classe</label><select class="input" name="clazz">${classes.map((c) => `<option value="${c.id}" ${c.id === clazz ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
-    <div class="field" style="min-width:220px"><label>Semestre (modèle)</label><select class="input" name="sem">${sems.map((x) => `<option value="${x.id}" ${x.id === sem ? 'selected' : ''}>${esc(x.tname)} · S${x.number}</option>`).join('')}</select></div>
+  const levels = await db.prepare('SELECT id, name, ord FROM levels ORDER BY ord, name').all();
+  const allClasses = await db.prepare(`SELECT c.id, c.name, c.level_id, c.program_id,
+      l.name AS level_name, p.name AS program_name
+    FROM classes c JOIN levels l ON l.id=c.level_id JOIN programs p ON p.id=c.program_id
+    ORDER BY c.level_id, p.name, c.name, c.id`).all();
+  if (!levels.length) {
+    res.send(adminPage(req, 'Calendrier', '<div class="empty">Créez d’abord un niveau et une classe.</div>'));
+    return;
+  }
+
+  const requestedLevel = Number(req.query.level);
+  const levelId = levels.some((l) => l.id === requestedLevel) ? requestedLevel : levels[0].id;
+  const classes = allClasses.filter((c) => c.level_id === levelId);
+  const requestedClass = Number(req.query.clazz);
+  const selectedClass = classes.find((c) => c.id === requestedClass) || classes[0] || null;
+  const clazz = selectedClass?.id || null;
+  const selectedDate = adminValidDate(req.query.date) ? String(req.query.date) : adminToday();
+  const weekday = adminDay(selectedDate);
+
+  if (!selectedClass) {
+    res.send(adminPage(req, 'Calendrier', '<div class="empty">Aucune classe n’est rattachée à ce niveau.</div>'));
+    return;
+  }
+
+  /* Les matières sont volontairement prises dans TOUS les semestres du niveau et
+     du programme de la classe : S3 et S4 apparaissent dans la même liste. */
+  const semesters = await db.prepare(`SELECT s.id, s.number, s.name
+    FROM semesters s JOIN templates t ON t.id=s.template_id
+    WHERE t.level_id=? AND t.program_id=? ORDER BY s.ord, s.number`).all(selectedClass.level_id, selectedClass.program_id);
+  const courses = await db.prepare(`SELECT c.id, c.name, c.coefficient, c.credits,
+      u.code AS ucode, s.id AS semester_id, s.number AS semester_number, s.name AS semester_name
+    FROM courses c
+    JOIN units u ON u.id=c.unit_id
+    JOIN semesters s ON s.id=u.semester_id
+    JOIN templates t ON t.id=s.template_id
+    WHERE t.level_id=? AND t.program_id=?
+    ORDER BY s.ord, u.ord, c.ord, c.id`).all(selectedClass.level_id, selectedClass.program_id);
+
+  /* Les créneaux créés avec l’ancienne version restent visibles chaque semaine via
+     leur jour. Les nouveaux créneaux sont, eux, rattachés à une date exacte. */
+  const rows = await db.prepare(`SELECT sl.*, c.name AS cname,
+      s.number AS semester_number, s.name AS semester_name,
+      l.name AS level_name, p.name AS program_name
+    FROM schedule_slots sl
+    LEFT JOIN courses c ON c.id=sl.course_id
+    LEFT JOIN semesters s ON s.id=sl.semester_id
+    LEFT JOIN templates t ON t.id=s.template_id
+    LEFT JOIN levels l ON l.id=t.level_id
+    LEFT JOIN programs p ON p.id=t.program_id
+    WHERE sl.class_id=?
+      AND (sl.slot_date=? OR (sl.slot_date IS NULL AND sl.day=?))
+    ORDER BY COALESCE(sl.slot_date, ?), sl.day, sl.start`).all(clazz, selectedDate, weekday, selectedDate);
+
+  const classOptions = classes.map((c) => `<option value="${c.id}" ${c.id === clazz ? 'selected' : ''}>${esc(c.program_name)} · ${esc(c.name)}</option>`).join('');
+  const levelOptions = levels.map((l) => `<option value="${l.id}" ${l.id === levelId ? 'selected' : ''}>${esc(l.name)}</option>`).join('');
+  const semesterOptions = semesters.map((s) => `<option value="${s.id}">S${s.number} · ${esc(s.name)}</option>`).join('');
+  const courseOptions = courses.length
+    ? courses.map((c) => `<option value="${c.id}">S${c.semester_number} · ${esc(c.ucode ? c.ucode + ' · ' : '')}${esc(c.name)}</option>`).join('')
+    : '<option value="">Aucune matière — utilisez un intitulé libre</option>';
+
+  const filter = `<form class="inline" method="get" action="${url('/admin/emploi', req.ctx)}" style="margin-bottom:12px;align-items:end">
+    <div class="field" style="min-width:150px"><label>Niveau</label><select class="input" name="level">${levelOptions}</select></div>
+    <div class="field" style="min-width:210px"><label>Groupe</label><select class="input" name="clazz">${classOptions}</select></div>
+    <div class="field" style="min-width:175px"><label>Date</label><input class="input" type="date" name="date" value="${esc(selectedDate)}" required/></div>
     <button class="btn sm ghost" style="width:auto">Afficher</button></form>`;
+
   const form = `<form class="card" method="post" action="${url('/admin/emploi/add', req.ctx)}" style="margin-top:14px">
     ${hiddenT(req.ctx.t, { th: req.ctx.th })}
-    <input type="hidden" name="clazz" value="${clazz}"/><input type="hidden" name="sem" value="${sem}"/>
-    <h3 style="margin:0 0 10px;font-size:14px">Ajouter un créneau à ${esc(cn?.name || '')} — ${esc(sn ? `S${sn.number}` : '')}</h3>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
-      <div class="field"><label>Matière du semestre</label><select class="input" name="course_id"><option value="">— Intitulé libre —</option>${courses.map((c) => `<option value="${c.id}">${esc(c.ucode ? c.ucode + ' · ' : '')}${esc(c.name)}</option>`).join('')}</select></div>
+    <input type="hidden" name="level" value="${levelId}"/><input type="hidden" name="clazz" value="${clazz}"/><input type="hidden" name="slot_date" value="${esc(selectedDate)}"/>
+    <h3 style="margin:0 0 10px;font-size:14px">Ajouter un créneau — ${esc(selectedClass.level_name)} · ${esc(selectedClass.program_name)} · ${esc(selectedClass.name)}</h3>
+    <p class="tiny muted" style="margin:-4px 0 12px">Date sélectionnée : <b>${esc(adminDateLabel(selectedDate))}</b>. Les matières proposées regroupent tous les semestres du niveau, notamment S3 et S4.</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px">
+      <div class="field" style="grid-column:span 2"><label>Matière du niveau — tous les semestres</label><select class="input" name="course_id"><option value="">— Intitulé libre —</option>${courseOptions}</select></div>
+      <div class="field"><label>Semestre si intitulé libre</label><select class="input" name="semester_id">${semesterOptions || '<option value="">— Aucun semestre —</option>'}</select></div>
       <div class="field"><label>ou intitulé libre</label><input class="input" name="title" placeholder="Examen, TD…"/></div>
-      <div class="field"><label>Jour</label><select class="input" name="day">${DAY_NAMES.map((n, i) => `<option value="${i + 1}">${n}</option>`).join('')}</select></div>
       <div class="field"><label>Début</label><input class="input" type="time" name="start" value="08:00" required/></div>
       <div class="field"><label>Fin</label><input class="input" type="time" name="end" value="10:00" required/></div>
-      <div class="field"><label>Salle</label><input class="input" name="room" placeholder="A101"/></div>
+      <div class="field"><label>Salle</label><input class="input" name="room" placeholder="Amphi A"/></div>
     </div>
-    <button class="btn sm" style="margin-top:8px">Ajouter le créneau</button></form>`;
-  const table = rows.length ? `<div class="card" style="padding:0;overflow-x:auto"><table class="tbl"><thead><tr><th>Jour</th><th>Horaires</th><th>Cours</th><th>Salle</th><th></th></tr></thead><tbody>
-      ${rows.map((rw) => `<tr><td>${DAY_NAMES[rw.day - 1]}</td><td class="n" style="text-align:left">${rw.start}–${rw.end}</td><td>${esc(rw.cname || rw.title || '')}</td><td>${esc(rw.room || '—')}</td>
-        <td class="r"><form method="post" action="${url('/admin/emploi/del', req.ctx)}" style="display:inline">${hiddenT(req.ctx.t, { th: req.ctx.th })}<input type="hidden" name="id" value="${rw.id}"/><input type="hidden" name="clazz" value="${clazz}"/><input type="hidden" name="sem" value="${sem}"/><button class="btn sm danger mini">Supprimer</button></form></td></tr>`).join('')}
-    </tbody></table></div>` : '<div class="empty">Aucun créneau pour cette combinaison — ajoutez-en ci-dessous.</div>';
-  res.send(adminPage(req, 'Calendrier', `<h1 style="font-size:18px;margin:4px 2px 10px">Emploi du temps</h1>${filter}${table}${form}`));
+    <button class="btn sm" style="margin-top:8px">Ajouter le créneau à cette date</button></form>`;
+
+  const table = rows.length ? `<div class="card" style="padding:0;overflow-x:auto"><table class="tbl"><thead><tr><th>Date</th><th>Niveau / semestre</th><th>Horaires</th><th>Matière</th><th>Salle</th><th></th></tr></thead><tbody>
+      ${rows.map((rw) => {
+    const dateText = rw.slot_date ? adminDateLabel(rw.slot_date) : `${DAY_NAMES[rw.day - 1]} · hebdomadaire`;
+    const semText = rw.semester_number ? `S${rw.semester_number}` : '—';
+    return `<tr><td>${esc(dateText)}</td><td>${esc(rw.level_name || selectedClass.level_name)} · ${esc(semText)}</td><td class="n" style="text-align:left">${esc(rw.start)}–${esc(rw.end)}</td><td>${esc(rw.cname || rw.title || '')}</td><td>${esc(rw.room || '—')}</td>
+        <td class="r"><form method="post" action="${url('/admin/emploi/del', req.ctx)}" style="display:inline">${hiddenT(req.ctx.t, { th: req.ctx.th })}<input type="hidden" name="id" value="${rw.id}"/><input type="hidden" name="level" value="${levelId}"/><input type="hidden" name="clazz" value="${clazz}"/><input type="hidden" name="slot_date" value="${esc(selectedDate)}"/><button class="btn sm danger mini">Supprimer</button></form></td></tr>`;
+  }).join('')}
+    </tbody></table></div>` : `<div class="empty">Aucun créneau pour ${esc(adminDateLabel(selectedDate))}. Ajoutez-en ci-dessous.</div>`;
+  res.send(adminPage(req, 'Calendrier', `<h1 style="font-size:18px;margin:4px 2px 10px">Calendrier de l’emploi du temps</h1>${filter}${table}${form}`));
 }));
 
 r.post('/admin/emploi/add', need('admin'), H(async (req, res) => {
-  const clazz = Number(req.body.clazz); const sem = Number(req.body.sem); const day = Number(req.body.day);
-  const start = String(req.body.start || ''); const end = String(req.body.end || '');
-  if (!clazz || !sem) throw badRequest('Classe et semestre requis');
-  if (!(day >= 1 && day <= 6)) throw badRequest('Jour invalide (1 à 6)');
-  if (!/^\d{2}:\d{2}$/.test(start) || !/^\d{2}:\d{2}$/.test(end) || end <= start) throw badRequest('Horaires invalides : format HH:MM, fin après début');
+  const clazz = Number(req.body.clazz);
+  const selectedDate = adminValidDate(req.body.slot_date) ? String(req.body.slot_date) : adminToday();
+  const day = adminDay(selectedDate);
+  if (!clazz || !adminValidDate(selectedDate)) throw badRequest('Niveau, groupe et date sont requis');
+  if (!(day >= 1 && day <= 6)) throw badRequest('Choisissez une date du lundi au samedi');
+  const klass = await db.prepare('SELECT id, level_id, program_id FROM classes WHERE id=?').get(clazz);
+  if (!klass) throw badRequest('Groupe inconnu');
+  if (!/^\d{2}:\d{2}$/.test(String(req.body.start || '')) || !/^\d{2}:\d{2}$/.test(String(req.body.end || '')) || String(req.body.end) <= String(req.body.start)) throw badRequest('Horaires invalides : format HH:MM, fin après début');
+  const start = String(req.body.start); const end = String(req.body.end);
   const courseId = req.body.course_id ? Number(req.body.course_id) : null;
+  let semesterId = Number(req.body.semester_id) || null;
   if (courseId) {
-    const ok = await db.prepare('SELECT c.id FROM courses c JOIN units u ON c.unit_id = u.id WHERE c.id = ? AND u.semester_id = ?').get(courseId, sem);
-    if (!ok) throw badRequest('Matière inconnue pour ce semestre');
+    const course = await db.prepare(`SELECT c.id, s.id AS semester_id
+      FROM courses c JOIN units u ON u.id=c.unit_id JOIN semesters s ON s.id=u.semester_id
+      JOIN templates t ON t.id=s.template_id
+      WHERE c.id=? AND t.level_id=? AND t.program_id=?`).get(courseId, klass.level_id, klass.program_id);
+    if (!course) throw badRequest('Matière inconnue pour le niveau sélectionné');
+    semesterId = course.semester_id;
+  } else {
+    const sem = await db.prepare(`SELECT s.id FROM semesters s JOIN templates t ON t.id=s.template_id
+      WHERE s.id=? AND t.level_id=? AND t.program_id=?`).get(semesterId, klass.level_id, klass.program_id);
+    if (!sem) throw badRequest('Choisissez un semestre pour l’intitulé libre');
   }
   const title = courseId ? null : String(req.body.title || '').trim().slice(0, 120);
   if (!courseId && !title) throw badRequest('Choisissez une matière ou saisissez un intitulé libre');
   const room = String(req.body.room || '').trim().slice(0, 60) || null;
-  await db.prepare('INSERT INTO schedule_slots (class_id, semester_id, course_id, title, day, start, end, room) VALUES (?,?,?,?,?,?,?,?)')
-    .run(clazz, sem, courseId, title, day, start, end, room);
-  res.redirect(303, url('/admin/emploi', { ...req.ctx, clazz, sem, ok: 'Créneau ajouté' }));
+  await db.prepare('INSERT INTO schedule_slots (class_id, semester_id, course_id, title, slot_date, day, start, end, room) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run(clazz, semesterId, courseId, title, selectedDate, day, start, end, room);
+  res.redirect(303, url('/admin/emploi', { ...req.ctx, level: klass.level_id, clazz, date: selectedDate, ok: 'Créneau ajouté' }));
 }));
 
 r.post('/admin/emploi/del', need('admin'), H(async (req, res) => {
-  const id = Number(req.body.id); const clazz = Number(req.body.clazz); const sem = Number(req.body.sem);
-  const rw = await db.prepare('SELECT id FROM schedule_slots WHERE id = ?').get(id);
-  if (!rw) throw notFound('Créneau introuvable');
-  await db.prepare('DELETE FROM schedule_slots WHERE id = ?').run(id);
-  res.redirect(303, url('/admin/emploi', { ...req.ctx, clazz, sem, ok: 'Créneau supprimé' }));
+  const id = Number(req.body.id); const clazz = Number(req.body.clazz);
+  const selectedDate = adminValidDate(req.body.slot_date) ? String(req.body.slot_date) : adminToday();
+  const klass = await db.prepare('SELECT id, level_id FROM classes WHERE id=?').get(clazz);
+  const rw = await db.prepare('SELECT id FROM schedule_slots WHERE id=? AND class_id=?').get(id, clazz);
+  if (!klass || !rw) throw notFound('Créneau introuvable');
+  await db.prepare('DELETE FROM schedule_slots WHERE id=? AND class_id=?').run(id, clazz);
+  res.redirect(303, url('/admin/emploi', { ...req.ctx, level: klass.level_id, clazz, date: selectedDate, ok: 'Créneau supprimé' }));
 }));
 
 export default r;

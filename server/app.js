@@ -29,6 +29,17 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  */
 export function ensureBootstrap() {
   bootstrap ||= (async () => {
+    /* Une première requête initialise aussi le schéma PostgreSQL sur une base neuve.
+       Elle reste compatible avec les anciennes bases SQLite/PostgreSQL déjà en place. */
+    await db.prepare('SELECT id FROM schedule_slots LIMIT 0').all();
+    /* Migration douce : les anciennes bases ont des créneaux hebdomadaires sans date.
+       On ajoute la date réelle sans effacer ni réécrire ces données historiques. */
+    try {
+      await db.exec('ALTER TABLE schedule_slots ADD COLUMN slot_date TEXT');
+    } catch (e) {
+      if (!/duplicate column|already exists/i.test(String(e?.message || e))) throw e;
+    }
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_slots_date ON schedule_slots(class_id, slot_date, start)');
     try {
       if ((await db.prepare('SELECT COUNT(*) n FROM users').get()).n === 0) {
         console.log('[start] Base vide → seed automatique…');

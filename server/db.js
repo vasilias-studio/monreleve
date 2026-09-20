@@ -177,7 +177,8 @@ CREATE TABLE IF NOT EXISTS schedule_slots (      -- emploi du temps : créneaux 
   semester_id INTEGER NOT NULL REFERENCES semesters(id) ON DELETE CASCADE,
   course_id INTEGER REFERENCES courses(id) ON DELETE CASCADE,
   title TEXT,                                      -- intitulé libre si pas de matière (examen, TD…)
-  day INTEGER NOT NULL CHECK(day BETWEEN 1 AND 6), -- 1=lundi … 6=samedi
+  slot_date TEXT,                                  -- date réelle YYYY-MM-DD (NULL = ancien créneau hebdomadaire)
+  day INTEGER NOT NULL CHECK(day BETWEEN 1 AND 6), -- 1=lundi … 6=samedi, conservé pour compatibilité
   start TEXT NOT NULL,                             -- 'HH:MM'
   end TEXT NOT NULL,
   room TEXT
