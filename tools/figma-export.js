@@ -55,7 +55,7 @@ function field(x, y, w, label, value, { select = false, placeholder = false } = 
 function topbar(y = 0, who = 'Naina Ranao', initials = 'NR') {
   return `<g id="topbar">${rect(0, y, 390, 52, { fill: 'none' })}${rect(4, y + 8, 36, 36, { r: 6, fill: C.primary })}${text(22, y + 31, initials, { size: 12, weight: 800, fill: '#fff', anchor: 'middle' })}${text(48, y + 31, who, { size: 14.5, weight: 800 })}${text(342, y + 31, '⎋', { size: 16 })}${line(0, y + 52, 390, y + 52)}</g>`;
 }
-const TABS = [['home', 'Accueil', true], ['pencil', 'Saisie'], ['list', 'Relevé'], ['calendar', 'Calendrier']];
+const TABS = [['home', 'Accueil', true], ['pencil', 'Saisie'], ['send', 'Message'], ['list', 'Relevé'], ['calendar', 'Calendrier']];
 const ICONS = {
   home: (x, y, col) => `<path d="M ${x - 9} ${y - 1} L ${x} ${y - 9} L ${x + 9} ${y - 1} M ${x - 6.5} ${y - 3.5} V ${y + 8} H ${x + 6.5} V ${y - 3.5}" stroke="${col}" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`,
   list: (x, y, col) => `<g stroke="${col}" stroke-width="2" fill="none" stroke-linecap="round"><line x1="${x - 4}" y1="${y - 6}" x2="${x + 10}" y2="${y - 6}"/><line x1="${x - 4}" y1="${y}" x2="${x + 10}" y2="${y}"/><line x1="${x - 4}" y1="${y + 6}" x2="${x + 10}" y2="${y + 6}"/><circle cx="${x - 9}" cy="${y - 6}" r="1.6" fill="${col}"/><circle cx="${x - 9}" cy="${y}" r="1.6" fill="${col}"/><circle cx="${x - 9}" cy="${y + 6}" r="1.6" fill="${col}"/></g>`,
@@ -72,8 +72,8 @@ function tabbar(y) {
     inner = raw.replace(/^<\?xml[^>]*\?>\s*/, '').replace(/^<svg[^>]*>/, '').replace(/<\/svg>\s*$/, '').trim();
   } catch (e) { inner = ''; }
   if (!inner) return '';
-  const x = Math.round((390 - 345) / 2);
-  return `<g id="tabbar-pastille" aria-label="Accueil · Saisie · Relevé · Calendrier" transform="translate(${x} ${y})">${inner}</g>`;
+  const x = Math.round((390 - 371.373) / 2);
+  return `<g id="tabbar-pastille" aria-label="Accueil · Saisie · Message · Relevé · Calendrier" transform="translate(${x} ${y})">${inner}</g>`;
 }
 function stat(x, y, w, val, key, kind) { const fg = { ok: C.ok, warn: C.warn, bad: C.bad }[kind]; return `<g id="stat-${esc(key)}">${rect(x, y, w, 56, { r: 2, fill: C.card, stroke: C.line })}${text(x + 12, y + 28, val, { size: 18, weight: 800, fill: fg || C.text })}${text(x + 12, y + 45, key, { size: 10.5, weight: 600, fill: C.muted })}</g>`; }
 function inputBox(x, y, w, val, { disabled = false } = {}) {
