@@ -97,12 +97,29 @@ export function page(ctx, { title = 'MonRelevé', body = '', tabs = null, adminT
   /* Glissement : on anime le disque puis on navigue (repli : lien natif si JS coupé ou mouvement réduit). */
   (function () {
     var n = document.querySelector('.tabbar'); if (!n) return;
+    var disk = n.querySelector('.tab-disc');
     var calm = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    /* Le CSS fournit un repli sans JS. Avec JS, on mesure le bouton réel :
+       la boule reste centrée même si la largeur disponible ou le zoom change. */
+    function place(a) {
+      if (!disk || !a) return;
+      if (a.classList.contains('pb-send')) { disk.style.opacity = '0'; return; }
+      var bar = n.getBoundingClientRect();
+      var item = a.getBoundingClientRect();
+      var width = disk.getBoundingClientRect().width;
+      disk.style.opacity = '1';
+      disk.style.transform = 'translateX(' + (item.left - bar.left + (item.width - width) / 2) + 'px)';
+    }
+    var current = n.querySelector('a.pillbtn.cur');
+    if (current) requestAnimationFrame(function () { place(current); });
+
     n.querySelectorAll('a.pillbtn').forEach(function (a, i) {
       a.addEventListener('click', function (e) {
         if (calm || i === +n.dataset.active || e.metaKey || e.ctrlKey || e.shiftKey) return;
         e.preventDefault();
         n.dataset.active = i;
+        place(a);
         setTimeout(function () { location.href = a.getAttribute('href'); }, 300);
       });
     });
