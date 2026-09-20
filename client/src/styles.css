@@ -90,37 +90,61 @@ main.wide { padding: 24px 24px 64px; }
 .icon-btn { border: 1px solid transparent; background: var(--surface); color: var(--text); width: 36px; height: 36px; border-radius: 999px; display: grid; place-items: center; transition: all 0.2s; }
 .icon-btn:hover { border-color: var(--accent); color: var(--accent); }
 
-/* ---------- pastille de navigation — repère Frame-101 (v2) : disque glissant sous l'onglet actif ---------- */
+/* ---------- barre étudiante — Frame-109 : quatre onglets et bouton central « message » ---------- */
 .tabbar {
   position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
-  display: flex; align-items: center; height: 65px; width: max-content;
-  background: #161513; border-radius: 32.5px;
-  padding: 0 2px; z-index: 40;
+  display: flex; align-items: center; justify-content: space-between;
+  width: min(373px, calc(100vw - 24px)); height: 60px;
+  background: #161513; border-radius: 30px; padding: 0; z-index: 40;
   box-shadow: 0 16px 40px rgba(22, 21, 19, 0.30);
-  --pitch: 93.5px; --gap: calc(var(--pitch) - 61px); --pill-icon: #F2E9D8; --pill-accent: #BF814B;
-  gap: var(--gap);
+  --tab-size: clamp(48px, 16.4vw, 61px);
+  --tab-gap: max(0px, calc((100% - (5 * var(--tab-size))) / 4));
+  --tab-step: calc(var(--tab-size) + var(--tab-gap));
+  --tab-step2: calc(var(--tab-step) + var(--tab-step));
+  --tab-step3: calc(var(--tab-step2) + var(--tab-step));
+  --tab-step4: calc(var(--tab-step3) + var(--tab-step));
+  --pill-icon: #F2E9D8; --pill-accent: #BF814B;
+  gap: var(--tab-gap);
 }
 [data-theme="dark"] .tabbar {
-  /* nuit = fond et disque inversés (crème ↔ encre), icônes conservées en cuivre #BF814B */
+  /* nuit = fond et disques inversés (crème ↔ encre), icônes conservées en cuivre #BF814B */
   background: #F2E9D8; box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
   --pill-icon: #BF814B;
 }
-[data-theme="dark"] .tabbar .tab-disc { background: #161513; }
-.tabbar .tab-disc {
-  position: absolute; left: 2px; top: 2px; width: 61px; height: 61px; border-radius: 50%;
-  background: #F2E9D8; z-index: 0;
-  transform: translateX(calc(var(--act, 0) * var(--pitch)));
-  transition: transform 0.42s cubic-bezier(0.3, 1.25, 0.4, 1);
+[data-theme="dark"] .tabbar .tab-disc,
+[data-theme="dark"] .tabbar .tab-send-disc { background: #161513; }
+.tabbar .tab-disc,
+.tabbar .tab-send-disc {
+  position: absolute; border-radius: 50%; pointer-events: none;
+  transition: transform 0.42s cubic-bezier(0.3, 1.25, 0.4, 1), opacity 0.2s;
 }
-.tabbar[data-active="0"] .tab-disc { --act: 0; } .tabbar[data-active="1"] .tab-disc { --act: 1; }
-.tabbar[data-active="2"] .tab-disc { --act: 2; } .tabbar[data-active="3"] .tab-disc { --act: 3; }
-.tabbar .pillbtn { position: relative; z-index: 1; flex: none; width: 61px; height: 65px; display: flex; align-items: center; justify-content: center; color: var(--pill-icon); text-decoration: none; }
+.tabbar .tab-disc {
+  left: calc((var(--tab-size) - (var(--tab-size) - 6px)) / 2); top: 2.5px;
+  width: calc(var(--tab-size) - 6px); height: calc(var(--tab-size) - 6px);
+  background: #F2E9D8; z-index: 0;
+}
+.tabbar .tab-send-disc {
+  left: calc(var(--tab-step2) + ((var(--tab-size) - (var(--tab-size) + 2px)) / 2));
+  top: -1.5px; width: calc(var(--tab-size) + 2px); height: calc(var(--tab-size) + 2px);
+  background: #F2E9D8; z-index: 0;
+}
+.tabbar[data-active="0"] .tab-disc { transform: translateX(0); }
+.tabbar[data-active="1"] .tab-disc { transform: translateX(var(--tab-step)); }
+.tabbar[data-active="2"] .tab-disc { opacity: 0; transform: translateX(var(--tab-step2)); }
+.tabbar[data-active="3"] .tab-disc { transform: translateX(var(--tab-step3)); }
+.tabbar[data-active="4"] .tab-disc { transform: translateX(var(--tab-step4)); }
+.tabbar .pillbtn {
+  position: relative; z-index: 1; flex: 0 0 var(--tab-size); width: var(--tab-size); height: 60px;
+  display: flex; align-items: center; justify-content: center; color: var(--pill-icon); text-decoration: none;
+}
+.tabbar .pillbtn.pb-send { z-index: 2; color: #161513; }
+[data-theme="dark"] .tabbar .pillbtn.pb-send { color: #F2E9D8; }
 .tabbar .pillbtn svg { display: block; transition: transform 0.18s; }
 .tabbar .pillbtn:hover svg, .tabbar .pillbtn:focus-visible svg { transform: scale(1.06); }
 .tabbar .pillbtn:active svg { transform: scale(0.96); }
 .tabbar .pillbtn.cur { color: var(--pill-accent); }
 @media (prefers-reduced-motion: reduce) { .tabbar .tab-disc, .tabbar .pillbtn svg { transition: none; } }
-@media (max-width: 380px) { .tabbar { transform: translateX(-50%) scale(0.9); transform-origin: bottom center; } }
+
 
 /* ---------- cartes & grilles (exp-card) ---------- */
 .card { background: var(--card); border: 1px solid transparent; border-radius: var(--radius); box-shadow: none; padding: 16px; margin-bottom: 12px; transition: border-color 0.2s; }

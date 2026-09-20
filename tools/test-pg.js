@@ -25,7 +25,7 @@ console.log(`\nPilote : ${db.driver}\n`);
 /* ── 1. schéma créé automatiquement à la première requête ── */
 const tables = await db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().catch(() => null);
 const liteTables = await db.prepare(`SELECT table_name AS name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name`).all();
-check('schéma créé (14 tables)', liteTables.length >= 14, `${liteTables.length} tables`);
+check('schéma créé', liteTables.length >= 14, `${liteTables.length} tables`);
 check('table users présente', liteTables.some((t) => t.name === 'users'));
 
 /* ── 2. insertion + identifiant créé (lastInsertRowid ↔ RETURNING id) ── */
@@ -112,12 +112,21 @@ const examSlot = await db.prepare('INSERT INTO schedule_slots (class_id, semeste
 const exam = await db.prepare('SELECT slot_date, slot_type, day FROM schedule_slots WHERE id=?').get(examSlot.lastInsertRowid);
 check('type examen conservé', exam?.slot_type === 'exam' && exam?.slot_date === '2026-09-21', JSON.stringify(exam));
 
-/* ── 9. clé primaire composite (announcement_likes) ── */
+/* ── 9. messages étudiant → administration ── */
+const message = await db.prepare("INSERT INTO admin_messages (sender_id, subject, body) VALUES (?,?,?)")
+  .run(u1.lastInsertRowid, 'Question de test', 'Bonjour administration');
+const messageRow = await db.prepare('SELECT subject, body, status FROM admin_messages WHERE id=?').get(message.lastInsertRowid);
+check('message privé conservé', messageRow?.subject === 'Question de test' && messageRow?.body === 'Bonjour administration' && messageRow?.status === 'unread', JSON.stringify(messageRow));
+await db.prepare("UPDATE admin_messages SET status='read' WHERE id=?").run(message.lastInsertRowid);
+const messageRead = await db.prepare('SELECT status FROM admin_messages WHERE id=?').get(message.lastInsertRowid);
+check('message marqué comme lu', messageRead?.status === 'read', JSON.stringify(messageRead));
+
+/* ── 10. clé primaire composite (announcement_likes) ── */
 const like1 = await db.prepare('INSERT INTO announcement_likes (announcement_id, user_id) VALUES (?,?) ON CONFLICT DO NOTHING').run(ou.lastInsertRowid, u1.lastInsertRowid);
 const like2 = await db.prepare('INSERT INTO announcement_likes (announcement_id, user_id) VALUES (?,?) ON CONFLICT DO NOTHING').run(ou.lastInsertRowid, u1.lastInsertRowid);
 check('« J\'aime » idempotent', like2.changes === 0 && like1.changes >= 0);
 
-/* ── 10. transactions : validation et annulation ── */
+/* ── 11. transactions : validation et annulation ── */
 await tx(async () => {
   await db.prepare('INSERT INTO imports (filename) VALUES (?)').run('commit.db');
 });
@@ -132,7 +141,7 @@ try {
 const apresRollback = await db.prepare("SELECT COUNT(*) AS n FROM imports WHERE filename='rollback.db'").get();
 check('transaction annulée (ROLLBACK)', Number(apresRollback.n) === 0);
 
-/* ── 11. suppressions en cascade et cohérence ── */
+/* ── 12. suppressions en cascade et cohérence ── */
 await db.prepare('DELETE FROM courses WHERE id=?').run(mat.lastInsertRowid);
 const notesRestantes = await db.prepare('SELECT COUNT(*) AS n FROM grades').get();
 check('CASCADE : notes supprimées avec la matière', Number(notesRestantes.n) === 0);

@@ -34,8 +34,10 @@ const SEEDS = [
   /* les pastilles S3/S4 ont été retirées de la page : la variante « Semestre 4 » reste exportée,
      atteignable par son fichier (ou ?sem= côté serveur) */
   ['calendrier-s4.html', '/calendrier?sem=2&weeks=13', 'student'],
+  ['messages.html', '/messages', 'student'],
   ['profil.html', '/profil', 'student'],
   ['admin-emploi.html', '/admin/emploi', 'admin'],
+  ['admin-messages.html', '/admin/messages', 'admin'],
   ['accueil-admin.html', '/accueil', 'admin'],   /* le fil vu par l'administration (avec le composeur) */
   ['admin.html', '/admin', 'admin'],
   ['admin-etudiants.html', '/admin/etudiants', 'admin'],
@@ -46,8 +48,8 @@ const SEEDS = [
 
 /* routes considérées comme pages (→ candidate à l'export) ; le reste reste tel quel */
 const PAGE_PATHS = new Set([
-  '/', '/login', '/register', '/forgot', '/reset', '/accueil', '/saisie', '/releve', '/moyennes', '/calendrier', '/profil',
-  '/admin', '/admin/etudiants', '/admin/modeles', '/admin/referentiels', '/admin/import', '/admin/emploi',
+  '/', '/login', '/register', '/forgot', '/reset', '/accueil', '/saisie', '/releve', '/moyennes', '/calendrier', '/messages', '/profil',
+  '/admin', '/admin/etudiants', '/admin/modeles', '/admin/referentiels', '/admin/import', '/admin/emploi', '/admin/messages',
 ]);
 /* aliases : une route supprimée/équivalente pointe vers la page canonique */
 const ALIAS = { '/reset': '/login', '/moyennes': '/releve', '/': '/accueil' };

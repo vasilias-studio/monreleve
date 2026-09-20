@@ -278,7 +278,13 @@ r.post('/reset', H(async (req, res) => {
 /* ------------------------------------------------------------------ */
 /* Espace étudiant                                                      */
 /* ------------------------------------------------------------------ */
-const STU_TABS = [['/accueil', 'home', 'Accueil', '/accueil'], ['/saisie', 'pencil', 'Saisie', '/saisie'], ['/releve', 'list', 'Relevé', '/releve'], ['/calendrier', 'calendar', 'Calendrier', '/calendrier']];
+const STU_TABS = [
+  ['/accueil', 'home', 'Accueil', '/accueil'],
+  ['/saisie', 'pencil', 'Saisie', '/saisie'],
+  ['/messages', 'send', 'Envoyer un message à l’administration', '/messages'],
+  ['/releve', 'list', 'Relevé', '/releve'],
+  ['/calendrier', 'calendar', 'Calendrier', '/calendrier'],
+];
 const stuPage = (req, title, body) => page(req.ctx, { title, body, tabs: STU_TABS });
 
 /* ------------------------------------------------------------------ */
@@ -687,6 +693,41 @@ r.get('/calendrier', need('student'), H(async (req, res) => {
   res.send(stuPage(req, 'Calendrier', body));
 }));
 
+/* ------------------------------------------------------------------ */
+/* Messages privés étudiant → administration                           */
+/* ------------------------------------------------------------------ */
+r.get('/messages', need('student'), H(async (req, res) => {
+  const rows = await db.prepare(`SELECT id, subject, body, status, created_at
+    FROM admin_messages WHERE sender_id=? ORDER BY created_at DESC, id DESC`).all(req.user.id);
+  const history = rows.length
+    ? `<div class="stack">${rows.map((m) => {
+      const state = m.status === 'read' ? chip('Lu', 'ok') : chip('En attente', 'warn');
+      const content = esc(m.body).replace(/\r?\n/g, '<br/>');
+      return `<article class="card" style="margin-bottom:0"><div class="row spread" style="align-items:flex-start;gap:12px"><div><b>${esc(m.subject)}</b><div class="tiny muted" style="margin-top:3px">${esc(relTime(m.created_at))}</div></div>${state}</div><p style="margin:12px 0 0;white-space:normal">${content}</p></article>`;
+    }).join('')}</div>`
+    : '<div class="empty">Vous n’avez encore envoyé aucun message.</div>';
+  const body = `<h1 style="font-size:18px;margin:4px 2px 10px">Écrire à l’administration</h1>
+    <p class="muted small" style="margin:0 2px 14px">Une question sur votre dossier, vos notes ou votre scolarité ? Envoyez un message à l’administration.</p>
+    <form class="card" method="post" action="${url('/messages', req.ctx)}">
+      ${hiddenT(req.ctx.t, { th: req.ctx.th })}
+      <div class="field"><label>Objet</label><input class="input" name="subject" maxlength="120" placeholder="Objet du message" required/></div>
+      <div class="field"><label>Message</label><textarea class="input" name="body" rows="7" maxlength="4000" placeholder="Écrivez votre message…" required></textarea></div>
+      <button class="btn" style="width:auto">Envoyer le message</button>
+    </form>
+    <h2 style="font-size:15px;margin:24px 2px 10px">Mes messages</h2>
+    ${history}`;
+  res.send(stuPage(req, 'Messages', body));
+}));
+
+r.post('/messages', need('student'), H(async (req, res) => {
+  const subject = String(req.body.subject || '').trim().slice(0, 120);
+  const message = String(req.body.body || '').trim().slice(0, 4000);
+  if (!subject || !message) throw badRequest('Un objet et un message sont requis.');
+  await db.prepare(`INSERT INTO admin_messages (sender_id, subject, body, status) VALUES (?,?,?,'unread')`)
+    .run(req.user.id, subject, message);
+  res.redirect(303, url('/messages', { ...req.ctx, ok: 'Message envoyé à l’administration.' }));
+}));
+
 r.get('/profil', need('student'), H(async (req, res) => {
   const u = req.user; const s = await student(req); const o = await opts();
   const body = `<h1 style="font-size:18px;margin:4px 2px 10px">Mon profil</h1>
@@ -745,7 +786,7 @@ r.post('/profil/password', need('student'), H(async (req, res) => {
 /* ------------------------------------------------------------------ */
 /* Espace administrateur                                                */
 /* ------------------------------------------------------------------ */
-const adminPage = (req, title, body) => page(req.ctx, { title, body, adminTab: (req.ctx.pathname.match(/^\/admin\/(etudiants|modeles|import|referentiels|emploi)/)?.[0] || '/admin').replace('/etudiants/', '/etudiants').replace('/modeles/', '/modeles') });
+const adminPage = (req, title, body) => page(req.ctx, { title, body, adminTab: (req.ctx.pathname.match(/^\/admin\/(etudiants|modeles|import|referentiels|emploi|messages)/)?.[0] || '/admin').replace('/etudiants/', '/etudiants').replace('/modeles/', '/modeles') });
 
 r.get('/admin', need('admin'), H(async (req, res) => {
   const st = {
@@ -753,6 +794,7 @@ r.get('/admin', need('admin'), H(async (req, res) => {
     users: (await db.prepare('SELECT COUNT(*) n FROM users').get()).n,
     templates: (await db.prepare('SELECT COUNT(*) n FROM templates').get()).n,
     published: (await db.prepare("SELECT COUNT(*) n FROM publications WHERE status IN ('published','locked')").get()).n,
+    messages: (await db.prepare("SELECT COUNT(*) n FROM admin_messages WHERE status='unread'").get()).n,
   };
   const byProgram = await db.prepare(`SELECT p.name, COUNT(s.id) n FROM students s JOIN programs p ON p.id=s.program_id GROUP BY p.id ORDER BY n DESC`).all();
   const recent = await db.prepare(`SELECT s.id, u.first_name, u.last_name, s.matricule, p.name AS program FROM students s JOIN users u ON u.id=s.user_id LEFT JOIN programs p ON p.id=s.program_id ORDER BY s.created_at DESC, s.id DESC LIMIT 6`).all();
@@ -762,9 +804,11 @@ r.get('/admin', need('admin'), H(async (req, res) => {
       <div class="stat"><div class="v">${st.users}</div><div class="k">Comptes</div></div>
       <div class="stat"><div class="v">${st.templates}</div><div class="k">Modèles de relevés</div></div>
       <div class="stat ${st.published ? 'ok' : 'warn'}"><div class="v">${st.published}</div><div class="k">Semestres publiés</div></div>
+      <div class="stat ${st.messages ? 'warn' : 'ok'}"><div class="v">${st.messages}</div><div class="k">Messages non lus</div></div>
     </div>
     <div class="row" style="gap:8px;margin:14px 0;flex-wrap:wrap">
       <a class="btn sm" style="width:auto;text-decoration:none" href="${url('/admin/etudiants', req.ctx)}">Gérer les étudiants</a>
+      <a class="btn sm" style="width:auto;text-decoration:none" href="${url('/admin/messages', req.ctx)}">Messages${st.messages ? ` · ${st.messages}` : ''}</a>
       <a class="btn sm" style="width:auto;text-decoration:none" href="${url('/admin/import', req.ctx)}">Importer un Excel</a>
       <a class="btn sm ghost" style="width:auto;text-decoration:none" href="${url('/admin/modeles', req.ctx)}">Modèles & règles</a>
       <a class="btn sm ghost" style="width:auto;text-decoration:none" href="${url('/admin/referentiels', req.ctx)}">Référentiels</a>
@@ -785,6 +829,34 @@ const studentSelect = `SELECT s.id, s.matricule, s.program_id, s.level_id, s.cla
   FROM students s JOIN users u ON u.id=s.user_id
   LEFT JOIN programs p ON p.id=s.program_id LEFT JOIN levels l ON l.id=s.level_id
   LEFT JOIN academic_years y ON y.id=s.academic_year_id`;
+
+r.get('/admin/messages', need('admin'), H(async (req, res) => {
+  const unread = Number((await db.prepare("SELECT COUNT(*) n FROM admin_messages WHERE status='unread'").get()).n || 0);
+  const rows = await db.prepare(`SELECT m.*, u.first_name, u.last_name, u.email
+    FROM admin_messages m JOIN users u ON u.id=m.sender_id
+    ORDER BY CASE WHEN m.status='unread' THEN 0 ELSE 1 END, m.created_at DESC, m.id DESC`).all();
+  const list = rows.length
+    ? `<div class="stack">${rows.map((m) => {
+      const state = m.status === 'read' ? chip('Lu', 'ok') : chip('Nouveau', 'warn');
+      const content = esc(m.body).replace(/\r?\n/g, '<br/>');
+      const action = m.status === 'unread'
+        ? `<form method="post" action="${url('/admin/messages/' + m.id + '/read', req.ctx)}" style="margin:0">${hiddenT(req.ctx.t, { th: req.ctx.th })}<button class="btn sm ghost" style="width:auto">Marquer comme lu</button></form>`
+        : '';
+      return `<article class="card" style="margin-bottom:0"><div class="row spread" style="align-items:flex-start;gap:12px"><div><b>${esc(m.subject)}</b><div class="tiny muted" style="margin-top:3px">${esc(`${m.first_name || ''} ${m.last_name || ''}`.trim() || 'Étudiant')} · ${esc(m.email)} · ${esc(relTime(m.created_at))}</div></div>${state}</div><p style="margin:12px 0 0;white-space:normal">${content}</p>${action ? `<div style="margin-top:12px">${action}</div>` : ''}</article>`;
+    }).join('')}</div>`
+    : '<div class="empty">Aucun message reçu.</div>';
+  const body = `<h1 style="font-size:18px;margin:4px 2px 10px">Messages des étudiants</h1>
+    <p class="muted small" style="margin:0 2px 14px">${unread ? `<b>${unread}</b> message${unread > 1 ? 's' : ''} non lu${unread > 1 ? 's' : ''}.` : 'Tous les messages ont été lus.'}</p>
+    ${list}`;
+  res.send(adminPage(req, 'Messages', body));
+}));
+
+r.post('/admin/messages/:id/read', need('admin'), H(async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) throw notFound('Message introuvable');
+  await db.prepare("UPDATE admin_messages SET status='read' WHERE id=?").run(id);
+  res.redirect(303, url('/admin/messages', { ...req.ctx, ok: 'Message marqué comme lu.' }));
+}));
 
 r.get('/admin/etudiants', need('admin'), H(async (req, res) => {
   const q = String(req.query.q || '').trim();

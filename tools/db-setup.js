@@ -79,7 +79,7 @@ if (action === 'seed') {
 
 if (['schema', 'seed', 'check'].includes(action)) {
   console.log('\nÉtat de la base :');
-  for (const table of ['users', 'students', 'templates', 'semesters', 'units', 'courses', 'grades', 'schedule_slots', 'announcements', 'publications']) {
+  for (const table of ['users', 'students', 'templates', 'semesters', 'units', 'courses', 'grades', 'schedule_slots', 'announcements', 'admin_messages', 'publications']) {
     try { console.log(`  ${table.padEnd(16)} ${await compter(table)}`); }
     catch { console.log(`  ${table.padEnd(16)} (absente)`); }
   }

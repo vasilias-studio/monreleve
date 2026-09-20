@@ -63,6 +63,7 @@ for (const [chemin, attendu] of [
   ['/admin/referentiels', /référentiel|referentiel|filière|filiere/i],
   ['/admin/import', /import/i],
   ['/admin/emploi', /emploi|créneau|creneau/i],
+  ['/admin/messages', /message/i],
 ]) {
   const r = await appel(chemin, { cookie: cookieAdmin });
   verifier(`GET ${chemin} → 200`, r.statut === 200, `statut ${r.statut}`);
@@ -104,10 +105,14 @@ const repEtudiant = await fetch(BASE + '/api/auth/me', { headers: { Authorizatio
 const profilEtudiant = await repEtudiant.json().catch(() => null);
 verifier('API étudiant : profil complet', repEtudiant.status === 200 && Boolean(profilEtudiant), JSON.stringify(profilEtudiant).slice(0, 120));
 
-for (const chemin of ['/accueil', '/saisie', '/releve', '/calendrier?weeks=2', '/profil']) {
+for (const chemin of ['/accueil', '/saisie', '/releve', '/calendrier?weeks=2', '/messages', '/profil']) {
   const r = await appel(chemin, { cookie: cookieEtudiant });
   verifier(`étudiant GET ${chemin} → 200`, r.statut === 200, `statut ${r.statut}`);
   propre(`étudiant ${chemin}`, r);
+  if (chemin === '/messages') {
+    verifier('navigation : bouton message présent', /pb-send|Envoyer un message/i.test(r.texte));
+    verifier('formulaire de message présent', /name="subject"/.test(r.texte) && /name="body"/.test(r.texte));
+  }
 }
 const releveEtudiant = await appel('/releve', { cookie: cookieEtudiant });
 verifier('relevé : moyenne calculée présente',
@@ -171,7 +176,7 @@ if (fs.existsSync(fichierTest)) {
 }
 
 /* 7. visiteurs non connectés : les pages privées redirigent */
-for (const chemin of ['/accueil', '/releve', '/admin', '/saisie']) {
+for (const chemin of ['/accueil', '/releve', '/admin', '/saisie', '/messages']) {
   const r = await appel(chemin);
   verifier(`visiteur ${chemin} → redirection`, [301, 302, 303].includes(r.statut), `statut ${r.statut}`);
 }

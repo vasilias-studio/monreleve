@@ -198,6 +198,17 @@ CREATE TABLE IF NOT EXISTS announcements (       -- fil d'annonces de l'accueil 
 );
 CREATE INDEX IF NOT EXISTS idx_ann_created ON announcements(pinned DESC, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS admin_messages (     -- messages privés envoyés par les étudiants à l'administration
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  sender_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  subject TEXT NOT NULL,
+  body TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'unread' CHECK(status IN ('unread', 'read')),
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_admin_messages_status ON admin_messages(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_admin_messages_sender ON admin_messages(sender_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS announcement_likes (  -- « J'aime » (un par personne et par annonce)
   announcement_id INTEGER NOT NULL REFERENCES announcements(id) ON DELETE CASCADE,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
