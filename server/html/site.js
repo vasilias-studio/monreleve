@@ -187,7 +187,8 @@ r.post('/login', H(async (req, res) => {
   if (!user.is_active) return res.redirect('/login?err=' + encodeURIComponent('Compte désactivé — contactez l’administration.'));
   const t = signToken(user);
   res.cookie('mrt', t, { httpOnly: true, sameSite: 'lax', maxAge: 30 * 864e5 });
-  res.redirect(url(user.role === 'admin' ? '/admin' : '/accueil', { t, th: req.ctx.th }));
+  // Après un POST, 303 impose une nouvelle requête GET (Vercel peut conserver POST avec 307).
+  res.redirect(303, url(user.role === 'admin' ? '/admin' : '/accueil', { t, th: req.ctx.th }));
 }));
 
 r.get('/deconnexion', H((req, res) => { res.clearCookie('mrt'); res.redirect(url('/login', { th: req.ctx.th })); }));
@@ -232,7 +233,8 @@ r.post('/register', H(async (req, res) => {
     .run(ui.lastInsertRowid, String(b.matricule).trim(), asNum(b.program_id), asNum(b.level_id), yearId);
   const t = signToken(await db.prepare('SELECT * FROM users WHERE id=?').get(ui.lastInsertRowid));
   res.cookie('mrt', t, { httpOnly: true, sameSite: 'lax', maxAge: 30 * 864e5 });
-  res.redirect(url('/accueil', { t, th: req.ctx.th }));
+  // Après un POST, 303 évite que le navigateur renvoie le formulaire sur /accueil.
+  res.redirect(303, url('/accueil', { t, th: req.ctx.th }));
 }));
 
 r.get('/forgot', H((req, res) => {
