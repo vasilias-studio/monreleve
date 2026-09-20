@@ -24,3 +24,7 @@ exemple-*.pdf
 .DS_Store
 Thumbs.db
 *.log
+
+# cache d'installation npm (jamais versionné)
+.npm/
+_cacache/
