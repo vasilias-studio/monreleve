@@ -89,6 +89,8 @@ app.use(express.json({ limit: '2mb' }));
  * impératif dans les environnements d'aperçu volatils) ; seuls les fichiers statiques
  * éventuels (.css/.js/.png…) gardent leur politique propre. */
 app.use((req, res, next) => {
+  /* Même une ancienne URL contenant un jeton ne doit pas le transmettre à une autre ressource. */
+  res.setHeader('Referrer-Policy', 'no-referrer');
   if (!/\.(css|js|map|png|svg|ico|woff2?)$/.test(req.path)) res.setHeader('Cache-Control', 'no-store, must-revalidate');
   next();
 });

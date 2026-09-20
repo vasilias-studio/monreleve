@@ -65,15 +65,17 @@ const H = (fn) => async (req, res, next) => {
   try { await fn(req, res); } catch (e) { next(e); }
 };
 
-/* Courant : utilisateur + jeton + thème + messages flash */
+/* Courant : utilisateur par cookie httpOnly + thème + messages flash.
+ * Important : un paramètre t éventuellement présent dans une ancienne URL est
+ * volontairement ignoré. Une URL copiée ou partagée ne doit jamais ouvrir une session. */
 r.use(async (req, res, next) => {
   const q = req.query;
-  const token = q.t ? String(q.t) : getCookie(req, 'mrt');
+  const token = getCookie(req, 'mrt');
   const user = await readToken(token);
   /* le choix de thème est persisté en cookie : les liens sans ?th= le conservent */
   if (q.th === 'dark' || q.th === 'light') res.setHeader('Set-Cookie', `mrt_theme=${q.th}; Path=/; Max-Age=31536000; SameSite=Lax`);
   else if (q.th === 'auto') res.setHeader('Set-Cookie', 'mrt_theme=; Path=/; Max-Age=0; SameSite=Lax');
-  const ctx = { t: user && token ? String(token) : null, th: ['dark', 'light'].includes(q.th) ? String(q.th) : getCookie(req, 'mrt_theme'), pathname: req.path.replace(/\/$/, '') || '/', user, flash: q.ok ? esc(q.ok) : null, error: q.err ? esc(q.err) : null };
+  const ctx = { t: null, th: ['dark', 'light'].includes(q.th) ? String(q.th) : getCookie(req, 'mrt_theme'), pathname: req.path.replace(/\/$/, '') || '/', user, flash: q.ok ? esc(q.ok) : null, error: q.err ? esc(q.err) : null };
   req.ctx = ctx;
   req.user = user;
   next();
@@ -300,13 +302,13 @@ async function annonceCard(a, { ctx, liked = false, mine = false, admin = false 
   const ini = estAdmin ? 'AD' : initialsOf(a.first_name, a.last_name);
   const body = esc(a.body).replace(/\n{2,}/g, '</p><p>').replace(/\n/g, '<br/>');
   const likeBtn = `<form method="post" action="${url(`/accueil/annonces/${a.id}/aime`, ctx)}" style="margin:0">
-      <input type="hidden" name="t" value="${esc(ctx.t || '')}" /><input type="hidden" name="th" value="${esc(ctx.th || '')}" />
+      <input type="hidden" name="th" value="${esc(ctx.th || '')}" />
       <button class="likebtn${liked ? ' on' : ''}" type="submit" aria-pressed="${liked}">
         <svg viewBox="0 0 24 24" width="15" height="15" fill="${liked ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20.3 4.6 13a4.6 4.6 0 0 1 6.5-6.5l.9.9.9-.9A4.6 4.6 0 1 1 19.4 13Z"/></svg>
         <span>J'aime</span>${a.likes ? `<b>${a.likes}</b>` : ''}
       </button></form>`;
-  const mod = admin ? `<form method="post" action="${url(`/accueil/annonces/${a.id}/epingler`, ctx)}" style="margin:0"><input type="hidden" name="t" value="${esc(ctx.t || '')}" /><input type="hidden" name="th" value="${esc(ctx.th || '')}" /><button class="chip gray" type="submit" style="cursor:pointer">${a.pinned ? 'Désépingler' : 'Épingler'}</button></form>
-      <form method="post" action="${url(`/accueil/annonces/${a.id}/supprimer`, ctx)}" style="margin:0" onsubmit="return confirm('Supprimer cette annonce ?')"><input type="hidden" name="t" value="${esc(ctx.t || '')}" /><input type="hidden" name="th" value="${esc(ctx.th || '')}" /><button class="chip bad" type="submit" style="cursor:pointer">Supprimer</button></form>` : '';
+  const mod = admin ? `<form method="post" action="${url(`/accueil/annonces/${a.id}/epingler`, ctx)}" style="margin:0"><input type="hidden" name="th" value="${esc(ctx.th || '')}" /><button class="chip gray" type="submit" style="cursor:pointer">${a.pinned ? 'Désépingler' : 'Épingler'}</button></form>
+      <form method="post" action="${url(`/accueil/annonces/${a.id}/supprimer`, ctx)}" style="margin:0" onsubmit="return confirm('Supprimer cette annonce ?')"><input type="hidden" name="th" value="${esc(ctx.th || '')}" /><button class="chip bad" type="submit" style="cursor:pointer">Supprimer</button></form>` : '';
   return `<article class="post${a.pinned ? ' pinned' : ''}">
     <header class="post-head">
       <span class="avatar" title="Administration">${esc(ini)}</span>
@@ -1332,7 +1334,7 @@ r.get('/admin/import', need('admin'), H(async (req, res) => {
       const targets = o.templates;
       sheetStep = `<div class="card"><div class="row spread"><b>${esc(String(req.query.name || file))}</b><a class="link-btn small" href="${url('/admin/import', req.ctx)}">recommencer</a></div>
         <form class="grid" style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px" method="get" action="${url('/admin/import', req.ctx)}">
-          <input type="hidden" name="file" value="${esc(file)}"/><input type="hidden" name="t" value="${esc(req.ctx.t || '')}"/>
+          <input type="hidden" name="file" value="${esc(file)}"/>
           <div class="field"><label>Feuille</label><select class="input" name="sheet">${sheets.map((s) => `<option value="${esc(s.name)}" ${s.name === sheetSel ? 'selected' : ''}>${esc(s.name)} · ${s.rows} lignes</option>`).join('')}</select></div>
           <div class="field"><label>Mode d’import</label><select class="input" name="mode">
             <option value="structure" ${mode === 'structure' ? 'selected' : ''}>Structure du relevé (semestres / UE / matières)</option>
@@ -1356,7 +1358,7 @@ r.get('/admin/import', need('admin'), H(async (req, res) => {
           <input type="hidden" name="file" value="${esc(file)}"/><input type="hidden" name="sheet" value="${esc(sheetSel)}"/>
           <input type="hidden" name="mode" value="${esc(mode)}"/><input type="hidden" name="target" value="${esc(String(req.query.target || ''))}"/>
           ${mode === 'grades' ? ['matricule', 'subject', 'normal', 'rattrapage', 'coefficient', 'credits'].map((k) => `<input type="hidden" name="map_${k}" value="${esc(String(req.query['map_' + k] || ''))}"/>`).join('') : ''}
-          <input type="hidden" name="t" value="${esc(req.ctx.t || '')}"/>
+
           <h3 style="margin:0 0 8px;font-size:13px">Aperçu de l’analyse</h3>
           <p class="tiny muted" style="margin:0 0 8px">Cliquez pour lancer l’analyse complète (aucune écriture) : correspondances, conflits, lignes ignorées.</p>
           <button class="btn sm">Lancer l’analyse</button></form>`;

@@ -54,6 +54,12 @@ const connexionAdmin = await appel('/login', { methode: 'POST', corps: { email: 
 verifier('POST /login (admin) → redirection', [301, 302, 303].includes(connexionAdmin.statut), `statut ${connexionAdmin.statut}`);
 const cookieAdmin = connexionAdmin.cookie;
 verifier('cookie de session posé', /mrt=/.test(cookieAdmin), cookieAdmin);
+verifier('redirection de connexion sans jeton dans l URL', !/[?&]t=/.test(connexionAdmin.emplacement), connexionAdmin.emplacement);
+const sessionAdmin = cookieAdmin.match(/(?:^|;\s*)mrt=([^;]+)/)?.[1] || '';
+const lienPartage = await appel('/accueil?t=' + encodeURIComponent(sessionAdmin));
+verifier('lien étudiant partagé sans cookie → connexion requise',
+  [301, 302, 303].includes(lienPartage.statut) && /\/login(?:\?|$)/.test(lienPartage.emplacement),
+  `${lienPartage.statut} ${lienPartage.emplacement}`);
 
 for (const [chemin, attendu] of [
   ['/accueil', /annonce|Annonces/i],
@@ -69,6 +75,7 @@ for (const [chemin, attendu] of [
   verifier(`GET ${chemin} → 200`, r.statut === 200, `statut ${r.statut}`);
   verifier(`GET ${chemin} : contenu attendu`, attendu.test(r.texte));
   propre(chemin, r);
+  if (chemin === '/accueil') verifier('HTML étudiant/admin sans jeton de session', !/[?&]t=/.test(r.texte) && !/name="t"/.test(r.texte));
 }
 
 /* 3. API JSON (mêmes données, autre façade) — authentification par jeton porteur */

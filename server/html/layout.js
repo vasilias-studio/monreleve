@@ -1,9 +1,9 @@
 /**
  * layout.js — Coquille HTML commune du site MonRelevé (rendu 100 % serveur).
  * Aucune dépendance JS côté navigateur : liens classiques + formulaires POST, rendu 100 % serveur.
- * L'authentification transite par un cookie ET par le paramètre ?t= (jeton), ce dernier
- * étant indispensable dans les contextes où les cookies sont bloqués (aperçus en iframe
- * sandboxée, navigation privée agressive…). Deux micro-scripts tolérés, sans framework :
+ * L'authentification de l'interface HTML repose uniquement sur le cookie httpOnly de session :
+ * aucun jeton de session n'est placé dans les liens, les formulaires ou les URL partageables.
+ * Deux micro-scripts tolérés, sans framework :
  * bascule de thème (localStorage) et glissement du disque de navigation (repli sans JS).
  */
 
@@ -11,19 +11,20 @@ export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&a
 
 export const fmt = (v, d = 2) => (v == null || !Number.isFinite(Number(v)) ? '—' : Number(v).toLocaleString('fr-FR', { minimumFractionDigits: d, maximumFractionDigits: d }));
 
-/** Construit une URL interne qui propage le jeton t et le thème courant. */
-const INTERNAL_KEYS = new Set(['pathname', 'user', 'flash', 'error']);
-export function url(pathname, { t, th, ...query } = {}) {
+/** Construit une URL interne sans jamais y placer le jeton de session. */
+const INTERNAL_KEYS = new Set(['pathname', 'user', 'flash', 'error', 't']);
+export function url(pathname, { t: _sessionToken, th, ...query } = {}) {
   const q = new URLSearchParams();
   for (const [k, v] of Object.entries(query)) if (!INTERNAL_KEYS.has(k) && v !== undefined && v !== null && v !== '' && typeof v !== 'object') q.set(k, String(v));
-  if (t) q.set('t', t);
   if (th) q.set('th', th);
   const s = q.toString();
   return s ? `${pathname}?${s}` : pathname;
 }
 
-export const hiddenT = (t, extra = {}) =>
-  Object.entries({ t, ...extra }).filter(([, v]) => v !== undefined && v !== null)
+/* Compatibilité d'appel conservée : les anciens formulaires passent encore ctx.t,
+   mais un jeton de session n'est plus rendu dans le HTML. */
+export const hiddenT = (_sessionToken, extra = {}) =>
+  Object.entries(extra).filter(([, v]) => v !== undefined && v !== null)
     .map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}"/>`).join('');
 
 export const chip = (text, kind = 'gray') => `<span class="chip ${kind}">${text}</span>`;
