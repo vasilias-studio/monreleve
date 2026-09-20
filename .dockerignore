@@ -1,0 +1,12 @@
+node_modules
+data
+site-html
+dist
+.git
+.github
+*.zip
+*.png
+*.pdf
+apercu-*
+controle-*
+deploy

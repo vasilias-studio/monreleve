@@ -1,0 +1,32 @@
+# ============================================================
+# Service systemd — installation SANS Docker (VM Ubuntu/Debian)
+#   sudo cp deploy/monreleve.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now monreleve
+#   journalctl -u monreleve -f        (voir les journaux)
+# Prérequis : Node ≥ 20, l'application dans /opt/monreleve, données dans /var/lib/monreleve
+# ============================================================
+[Unit]
+Description=MonRelevé — application de notes (Node.js + SQLite)
+Documentation=file:/opt/monreleve/DEPLOIEMENT.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=monreleve
+Group=monreleve
+WorkingDirectory=/opt/monreleve
+Environment=NODE_ENV=production
+Environment=PORT=4000
+Environment=DATA_DIR=/var/lib/monreleve
+ExecStart=/usr/bin/node server/index.js
+Restart=always
+RestartSec=3
+# cloisonnement léger
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/monreleve
+
+[Install]
+WantedBy=multi-user.target

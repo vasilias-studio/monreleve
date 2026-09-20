@@ -1,0 +1,68 @@
+# ============================================================
+# Publie le SITE STATIQUE (site-html/) sur GitHub Pages.
+# Le site n'est pas committé en dur : il est RÉGÉNÉRÉ à chaque publication
+# (l'app est démarrée sur une base neuve, puis tools/static-export.js exporte
+# les pages). Le site publié reste donc toujours à jour avec le code.
+#
+# Mise en route : dépôt → Settings → Pages → Source = « GitHub Actions ».
+# Adresse obtenue : https://<compte>.github.io/<depot>/
+# ============================================================
+name: Site statique (GitHub Pages)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  exporter:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+
+      - name: Démarrer l'application (base neuve, seed automatique)
+        run: |
+          node server/index.js > /tmp/serve.log 2>&1 &
+          for i in $(seq 1 40); do
+            curl -sf http://localhost:4000/login > /dev/null && break
+            sleep 1
+          done
+          curl -sf http://localhost:4000/login > /dev/null || { cat /tmp/serve.log; exit 1; }
+
+      - name: Exporter le site statique
+        run: node tools/static-export.js
+
+      - name: Vérifier l'export (aucun jeton de session ne doit fuiter)
+        run: |
+          if grep -rl "eyJ" site-html/ ; then echo "Jeton présent dans l'export !"; exit 1; fi
+          test -f site-html/index.html
+          echo "Fichiers exportés : $(ls site-html | wc -l)"
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site-html
+
+  publier:
+    needs: exporter
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploiement.outputs.page_url }}
+    steps:
+      - id: deploiement
+        uses: actions/deploy-pages@v4

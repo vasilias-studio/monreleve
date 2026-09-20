@@ -1,0 +1,37 @@
+# ============================================================
+# Render — déploiement en un clic (plan gratuit)
+#   1. pousser ce dépôt sur GitHub
+#   2. Render → New → Blueprint → choisir le dépôt (il lit ce fichier)
+#
+# ⚠ PLAN GRATUIT : pas de disque persistant, et le service s'endort après
+#   15 min sans visite (première requête ensuite ≈ 1 min). La base SQLite est
+#   donc REMISE À ZÉRO à chaque redéploiement : pratique pour une démo, pas
+#   pour de vraies notes.
+#   → Base durable sur Render = plan Starter (7 $/mois) + le bloc `disk`
+#     commenté ci-dessous (DATA_DIR doit alors pointer sur le point de montage).
+# ============================================================
+services:
+  - type: web
+    name: monreleve
+    runtime: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /login
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATA_DIR
+        value: /tmp/monreleve-data
+    # --- base durable (plan payant) : décommenter ces 5 lignes + DATA_DIR=/var/data ---
+    # disk:
+    #   name: monreleve-data
+    #   mountPath: /var/data
+    #   sizeGB: 1
+
+  # Le site statique (site-html/) peut aussi être publié par Render, gratuitement.
+  # Décommenter après avoir lancé une fois `node tools/static-export.js` (le dossier doit exister).
+  # - type: web
+  #   name: monreleve-site
+  #   runtime: static
+  #   staticPublishPath: ./site-html

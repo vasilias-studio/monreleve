@@ -1,0 +1,130 @@
+/* ============================================================
+   MonRelevé — feuille de style OFFICIELLE (reskin « Vasilías »)
+   Reprise exacte de la charte de vasilias-studio.github.io :
+   papier #F2E9D8 · encre #161513 · accent ocre #BF814B ·
+   surface #ECE9E2 · Josefin Sans · pilules capitales · rayons 2 px ·
+   filets 12 % · aplats (aucun dégradé) · plat (aucune ombre).
+   Version « compatible import Figma » : uniquement des valeurs
+   littérales (pas de color-mix()/env()).
+   Un bloc = un Local/Component style Figma.
+   ============================================================ */
+
+:root {
+  /* ---------- Tokens CLAIR → Figma Variables / Color styles « Light » ---------- */
+  --bg: #F2E9D8;        /* papier — fond global                    */
+  --ink: #161513;       /* encre — texte & boutons primaires      */
+  --muted: #8A857C;     /* labels secondaires                      */
+  --line: #DCD3C2;      /* filets  (site réel : rgba(22,21,19,.12)) */
+  --accent: #BF814B;    /* ocre — hover, chiffres clés, actifs     */
+  --surface: #ECE9E2;   /* fonds doux (segments, en-têtes UE)      */
+  --card: #FFFFFF;      /* cartes (site réel : rgba(255,255,255,.6)) */
+  --card-2: #FBF7EE;    /* en-têtes de tableaux                     */
+  --ok: #4E6E54;   --ok-bg: #E4EBE1;     /* Validée       */
+  --warn: #9A6218; --warn-bg: #F3E3D2;   /* Rattrapage    */
+  --bad: #9C3B2E;  --bad-bg: #F2DFDB;     /* Non validée   */
+  --info: #55606E; --info-bg: #E6E9EC;    /* Publié        */
+  --radius: 2px;        /* tout est quasi-anguleux, sauf pilules   */
+  --shadow: none;       /* design plat                             */
+}
+[data-theme="dark"] {
+  /* ---------- Tokens NUIT (inversion papier/encre, accent conservé) ---------- */
+  --bg: #161513; --ink: #F2E9D8; --muted: #8A857C; --line: #2A2723;
+  --surface: #1E1C19; --card: #1B1916; --card-2: #211E1A;
+  --accent: #CF9460;
+  --ok: #9BC7A2; --ok-bg: #22301F; --warn: #E4B878; --warn-bg: #322A1B;
+  --bad: #E59A90; --bad-bg: #33201C; --info: #AAB7C5; --info-bg: #1E242B;
+}
+
+/* ---------- Base & typo (→ Text styles) — Josefin Sans 400→700 ---------- */
+body { font-family: 'Josefin Sans', 'Segoe UI', ui-sans-serif, system-ui, sans-serif; font-size: 16px; line-height: 1.5; background: var(--bg); color: var(--ink); }
+h1 { margin: 0; font-size: 27px; font-weight: 700; text-transform: uppercase; letter-spacing: -0.02em; } /* Display — titres de page capitales */
+h2 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }                              /* Section  (clamp original : 2→3.5rem) */
+h3 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.02em; }
+h4 { margin: 0; font-size: 15px; font-weight: 600; }
+.eyebrow { font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted); } /* micro-labels « [ 01 — SELECTED WORK ] » */
+.muted { color: var(--muted); } .small { font-size: 13px; } .tiny { font-size: 11.5px; color: var(--muted); }
+.num { font-variant-numeric: tabular-nums; font-weight: 700; }
+a { color: var(--ink); text-decoration: none; } a:hover { color: var(--accent); }
+
+/* ---------- Barre supérieure (header « scrolled ») ---------- */
+.topbar { height: 56px; background: #F2E9D8E8; /* 92 % */ backdrop-filter: blur(8px); border-bottom: 0; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+.logo-dot { width: 30px; height: 30px; border-radius: 6px; background: var(--accent); color: #FFFFFF; font-weight: 700; font-size: 13px; display: grid; place-items: center; }
+.topbar .brand { font-size: 17px; font-weight: 700; text-transform: uppercase; letter-spacing: -0.02em; }
+.icon-btn { width: 36px; height: 36px; border-radius: 999px; border: 1px solid transparent; background: var(--surface); color: var(--ink); display: grid; place-items: center; }
+.icon-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ---------- Navigation basse — capitales + point accent sur l'onglet actif ---------- */
+.tabbar { height: 66px; display: grid; grid-template-columns: repeat(4, 1fr); background: #F2E9D8EB; border-top: 0; }
+.tabbar a { color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; text-align: center; }
+.tabbar a.active { color: var(--accent); }
+.tabbar a.active::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+
+/* ---------- Cartes & panneau encre ---------- */
+.card { background: var(--card); border: 1px solid transparent; border-radius: 2px; padding: 16px; }
+.card:hover { border-color: #BF814B73; } /* accent 45 % */
+.hero { background: var(--ink); color: var(--bg); border: 1px solid transparent; border-radius: 2px; padding: 22px; } /* = traitement footer du portfolio */
+.hero .big { font-size: 46px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.05; }
+.hero .chip { background: transparent; border: 1px solid #F2E9D847; color: var(--bg); }
+
+/* ---------- Stats ---------- */
+.stat { background: var(--card); border: 1px solid transparent; border-radius: 2px; padding: 12px; }
+.stat .v { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
+.stat .k { color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; margin-top: 4px; }
+
+/* ---------- Puces / tags (selected-cats) — pilules capitales, fond translucide ---------- */
+.chip { border-radius: 999px; padding: 4px 12px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; border: 1px solid transparent; background: #FFFFFF99; color: var(--muted); }
+.chip.ok   { color: var(--ok);   border-color: #4E6E5459; background: var(--ok-bg); }
+.chip.warn { color: var(--warn); border-color: #9A621859; background: var(--warn-bg); }
+.chip.bad  { color: var(--bad);  border-color: #9C3B2E59; background: var(--bad-bg); }
+.chip.info { color: var(--info); border-color: #55606E59; background: var(--info-bg); }
+.chip.violet { color: var(--accent); border-color: #BF814B73; background: #F3E3D2; }
+
+/* ---------- Jauge — filet 2 px, remplissage accent ---------- */
+.bar { height: 2px; background: transparent; }
+.bar > i { height: 2px; background: var(--accent); }
+
+/* ---------- Listes ---------- */
+.list-item { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid transparent; border-radius: 2px; background: var(--card); }
+.list-item:hover { border-color: var(--accent); }
+.avatar { width: 40px; height: 40px; border-radius: 2px; border: 1px solid transparent; background: var(--surface); color: var(--accent); font-weight: 700; display: grid; place-items: center; }
+
+/* ---------- Champs ---------- */
+.field > label { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.12em; margin-bottom: 6px; }
+.input { width: 100%; padding: 11px 12px; border-radius: 2px; border: 1px solid transparent; background: var(--bg-soft, #ECE9E2); color: var(--ink); font: inherit; }
+.input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px #BF814B2E; outline: none; }
+.gin { width: 76px; padding: 7px 8px; border-radius: 2px; border: 1px solid transparent; background: var(--card); font-weight: 700; text-align: center; font-variant-numeric: tabular-nums; }
+
+/* ---------- Boutons (btn-dark) — pilule encre → hover accent ---------- */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 16px 32px; border-radius: 999px; border: 1px solid transparent; background: var(--ink); color: var(--bg); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; transition: all .3s; }
+.btn:hover { background: var(--accent); color: #FFFFFF; }
+.btn.ghost  { background: transparent; color: var(--ink); border-color: var(--ink); }
+.btn.ghost:hover { background: var(--ink); color: var(--bg); }
+.btn.subtle { background: #FFFFFF99; color: var(--accent); border-color: var(--line); }
+.btn.danger { background: transparent; color: var(--bad); border-color: #9C3B2E73; }
+.btn.danger:hover { background: var(--bad); color: #FFFFFF; }
+.btn.sm { padding: 8px 14px; font-size: 12px; width: auto; }
+.btn.mini { padding: 5px 10px; font-size: 11px; }
+
+/* ---------- Segments ---------- */
+.segments { display: inline-flex; background: var(--surface); border: 1px solid transparent; border-radius: 999px; padding: 3px; gap: 3px; }
+.segments button { border: 0; background: transparent; color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; padding: 7px 14px; border-radius: 999px; }
+.segments button.on { background: var(--ink); color: var(--bg); }
+
+/* ---------- Tableaux ---------- */
+.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.tbl th { text-align: left; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted); padding: 8px; border-bottom: 0; }
+.tbl td { padding: 9px 8px; border-bottom: 0; }
+.tbl .r { text-align: right; font-variant-numeric: tabular-nums; }
+.tbl .ue-head td { background: var(--surface); font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+
+/* ---------- Bandeaux ---------- */
+.banner { border-radius: 2px; padding: 12px 14px; font-size: 13px; font-weight: 600; border: 1px solid transparent; }
+.banner.info { background: var(--info-bg); color: var(--info); }
+.banner.warn { background: var(--warn-bg); color: var(--warn); }
+.banner.bad  { background: var(--bad-bg);  color: var(--bad); }
+.banner.ok   { background: var(--ok-bg);   color: var(--ok); }
+
+/* ---------- Auth ---------- */
+.auth-card { background: var(--card); border: 1px solid transparent; border-radius: 2px; padding: 22px; }
+.auth-hero { margin-bottom: 26px; }
+.link-btn { color: var(--accent); font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; background: none; border: 0; }

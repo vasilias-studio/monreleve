@@ -1,0 +1,26 @@
+# dépendances et sorties de build
+node_modules/
+dist/
+
+# données locales : la base, le secret de signature, les fichiers importés
+data/*.db
+data/*.db-*
+data/*.sqlite*
+data/uploads/
+data/backups/
+data/secret.key
+.env
+
+# export statique : régénéré (npm run export / workflow GitHub Pages)
+site-html/
+
+# archives et visuels de contrôle (artefacts de livraison)
+*.zip
+apercu-*.png
+controle-*.png
+exemple-*.pdf
+
+# divers
+.DS_Store
+Thumbs.db
+*.log

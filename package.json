@@ -1,0 +1,32 @@
+{
+  "name": "monreleve-app",
+  "version": "2.0.0",
+  "private": true,
+  "description": "MonReleve — suivi des notes universitaires : site web HTML (rendu serveur Express + SQLite) avec API REST et vraie console admin",
+  "type": "module",
+  "scripts": {
+    "setup": "npm install",
+    "seed": "node server/seed.js",
+    "seed:clean": "node server/seed.js --reset",
+    "create-admin": "node server/createAdmin.js",
+    "serve": "node server/index.js",
+    "start": "node server/index.js",
+    "dev": "node server/index.js",
+    "backup": "node tools/backup.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^11.10.0",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^1.4.5-lts.2",
+    "pdfkit": "^0.20.2",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

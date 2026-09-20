@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#4f46e5" />
+    <meta name="description" content="MonRelevé — gestion et suivi des notes universitaires (L1, L2, L3, toutes filières)" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>MonRelevé — Suivi des notes</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%234f46e5'/%3E%3Cstop offset='1' stop-color='%23a21caf'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='16' fill='url(%23g)'/%3E%3Ctext x='32' y='42' font-family='Arial' font-size='28' font-weight='900' fill='white' text-anchor='middle'%3EMR%3C/text%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      // Filet de sécurité : collecte les erreurs JS et, si rien ne s'est rendu après 2,5 s,
+      // affiche un panneau visible avec bouton de recharge (plus jamais d'écran gris muet).
+      var __errs = [];
+      window.addEventListener('error', function (e) {
+        __errs.push(String(e.message || (e.filename ? e.filename + ' → ' + (e.lineno || '?') : 'resource')));
+      }, true);
+      window.addEventListener('unhandledrejection', function (e) { __errs.push('promise: ' + String((e.reason && e.reason.message) || e.reason)); });
+      // Nettoyage proactif : supprime tout ancien service worker + ses caches.
+      try {
+        if ('serviceWorker' in navigator) {
+          navigator.serviceWorker.getRegistrations().then(function (rs) { rs.forEach(function (r) { r.unregister(); }); }).catch(function () {});
+        }
+        if (window.caches && caches.keys) {
+          caches.keys().then(function (ks) { ks.forEach(function (k) { caches.delete(k); }); }).catch(function () {});
+        }
+      } catch (e) { /* contexte sans stockage : sans importance */ }
+      setTimeout(function () {
+        var r = document.getElementById('root');
+        if (r && r.firstChild) return;
+        var d = document.createElement('div');
+        d.setAttribute('style', 'position:fixed;inset:0;background:#101828;color:#e8ecf3;font-family:system-ui,sans-serif;padding:28px;z-index:9999;display:flex;flex-direction:column;gap:14px;justify-content:center');
+        d.innerHTML = '<div style="font-size:34px">📡</div><h2 style="margin:0;color:#fff">L’application ne s’est pas affichée</h2>' +
+          '<p style="color:#98a2b3;margin:0;font-size:13.5px;line-height:1.5">Le serveur est probablement éteint (sandbox recyclé) ou un cache périmé bloque le chargement.</p>' +
+          '<button id="retry" style="align-self:flex-start;background:#4f46e5;border:0;color:#fff;font-weight:700;padding:12px 20px;border-radius:12px;cursor:pointer">Recharger proprement</button>' +
+          '<pre style="white-space:pre-wrap;color:#f97583;font-size:11.5px;max-height:30vh;overflow:auto;margin:0">' + (__errs.length ? 'Erreurs : ' + __errs.join('\n') : 'Aucune erreur JS détectée — le bundle n’a probablement pas été chargé.') + '</pre>';
+        document.body.appendChild(d);
+        document.getElementById('retry').onclick = function () {
+          var h = location.hash || '';
+          var url = location.pathname + '?fresh=' + Date.now() + h;
+          try { location.replace(url); } catch (e) { try { location.href = url; } catch (e2) { location.reload(); } }
+        };
+      }, 2500);
+    </script>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

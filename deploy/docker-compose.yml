@@ -1,0 +1,43 @@
+# ============================================================
+# MonRelevé sur une VM (Oracle Cloud Always Free, ou tout VPS)
+#   cd deploy && docker compose up -d --build
+#   → application sur http://<ip-du-serveur>   (et HTTPS dès qu'un nom de domaine
+#     est renseigné dans l'environnement de Caddy, cf. deploy/Caddyfile)
+#
+# La base vit dans le volume nommé `monreleve-data` : il survit aux mises à jour.
+# Mise à jour : git pull && docker compose up -d --build
+# ============================================================
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - DATA_DIR=/data
+      - PORT=4000
+    volumes:
+      - monreleve-data:/data
+    expose:
+      - "4000"
+
+  caddy:                       # HTTPS automatique + redirection des ports
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}      # ex. export DOMAIN=notes.mon-universite.mg
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  monreleve-data:
+  caddy-data:
+  caddy-config:

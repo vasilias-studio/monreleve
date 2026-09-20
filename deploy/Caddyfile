@@ -1,0 +1,8 @@
+# Caddy : sert l'application avec HTTPS automatique (Let's Encrypt) dès que DOMAIN
+# est un vrai nom de domaine pointé sur le serveur ; sinon, sur http://localhost.
+{$DOMAIN:localhost} {
+	encode gzip
+	reverse_proxy app:4000
+	# derrière un proxy/CDN, décommenter pour transmettre l'IP réelle :
+	# header_up X-Forwarded-Proto {scheme}
+}
