@@ -107,9 +107,13 @@ export function page(ctx, { title = 'MonRelevé', body = '', tabs = null, adminT
       if (a.classList.contains('pb-send')) { disk.style.opacity = '0'; return; }
       var bar = n.getBoundingClientRect();
       var item = a.getBoundingClientRect();
-      var width = disk.getBoundingClientRect().width;
+      var diskBox = disk.getBoundingClientRect();
+      /* left fournit déjà le petit retrait intérieur de la boule :
+         on le retire pour que son centre coïncide exactement avec celui de l'icône. */
+      var baseLeft = parseFloat(getComputedStyle(disk).left) || 0;
       disk.style.opacity = '1';
-      disk.style.transform = 'translateX(' + (item.left - bar.left + (item.width - width) / 2) + 'px)';
+      disk.style.top = (item.top - bar.top + (item.height - diskBox.height) / 2) + 'px';
+      disk.style.transform = 'translateX(' + (item.left - bar.left + (item.width - diskBox.width) / 2 - baseLeft) + 'px)';
     }
     var current = n.querySelector('a.pillbtn.cur');
     if (current) requestAnimationFrame(function () { place(current); });
