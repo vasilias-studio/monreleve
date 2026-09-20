@@ -281,6 +281,9 @@ main.wide { padding: 24px 24px 64px; }
 .calweeks > .calweek:not(:first-child) { margin-top: 44px; }
 .calcard { background: color-mix(in srgb, var(--accent) 15%, transparent); border-radius: 15px; padding: 19px 16px; }
 .calcard .t { color: var(--accent); font-weight: 700; font-size: 15px; line-height: 1; letter-spacing: 0.01em; font-variant-numeric: tabular-nums; }
+.calcard .t b { font-weight: 700; }
+.calcard.exam { background: color-mix(in srgb, var(--bad) 24%, transparent); }
+.calcard.exam .t { color: var(--bad); }
 .calcard .n { font-size: 20px; line-height: 1.05; margin-top: 10px; }
 .calcard .m { color: var(--muted); font-size: 12.5px; line-height: 1; margin-top: 8px; }
 .calcard.empty { background: var(--surface); }

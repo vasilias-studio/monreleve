@@ -561,7 +561,7 @@ r.get('/calendrier', need('student'), H(async (req, res) => {
   if (!sems.length) { res.send(stuPage(req, 'Calendrier', '<div class="empty">Aucun semestre défini pour votre filière.</div>')); return; }
   const cur = sems.find((x) => String(x.id) === String(req.query.sem)) || sems[0];
   const slots = classId ? await db.prepare(`
-      SELECT sl.day AS dday, sl.slot_date, sl.start, sl.end, sl.room, sl.title,
+      SELECT sl.day AS dday, sl.slot_date, sl.start, sl.end, sl.room, sl.title, sl.slot_type,
              c.name AS cname, un.code AS ucode
       FROM schedule_slots sl
       LEFT JOIN courses c ON c.id = sl.course_id
@@ -598,8 +598,9 @@ r.get('/calendrier', need('student'), H(async (req, res) => {
       const dd = new Date(mon); dd.setDate(mon.getDate() + i);
       const list = i === 6 ? [] : (byDay[i + 1] || []).filter((sl) => !sl.slot_date || sl.slot_date === iso(dd));   /* anciens créneaux = hebdomadaires ; nouveaux = date réelle */
       const cards = list.map((sl) => {
+        const exam = sl.slot_type === 'exam';
         const meta = sl.room ? 'Salle ' + sl.room : '';
-        return `<div class="calcard"><div class="t">${esc(sl.start)}–${esc(sl.end)}</div><div class="n">${esc(sl.cname || sl.title || 'Cours')}</div>${meta ? `<div class="m">${esc(meta)}</div>` : ''}</div>`;
+        return `<div class="calcard${exam ? ' exam' : ''}"><div class="t">${esc(sl.start)}–${esc(sl.end)}${exam ? ' <b>| Examen</b>' : ''}</div><div class="n">${esc(sl.cname || sl.title || (exam ? 'Examen' : 'Cours'))}</div>${meta ? `<div class="m">${esc(meta)}</div>` : ''}</div>`;
       }).join('') || `<div class="calcard empty"><div class="n">Aucun cours ${esc(dd.toLocaleDateString('fr-FR', { weekday: 'long' }))}${i === 6 ? ' (repos dominical)' : ''}.</div></div>`;
       return {
         i, label, num: dd.getDate(), iso: iso(dd), cards,
@@ -1597,17 +1598,19 @@ r.get('/admin/emploi', need('admin'), H(async (req, res) => {
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px">
       <div class="field" style="grid-column:span 2"><label>Matière du niveau — tous les semestres</label><select class="input" name="course_id"><option value="">— Intitulé libre —</option>${courseOptions}</select></div>
       <div class="field"><label>ou intitulé libre</label><input class="input" name="title" placeholder="Examen, TD…"/></div>
+      <div class="field"><label>Type du créneau</label><select class="input" name="slot_type"><option value="course">Cours</option><option value="exam">Examen</option></select></div>
       <div class="field"><label>Début</label><input class="input" type="time" name="start" value="08:00" required/></div>
       <div class="field"><label>Fin</label><input class="input" type="time" name="end" value="10:00" required/></div>
       <div class="field"><label>Salle</label><input class="input" name="room" placeholder="Amphi A"/></div>
     </div>
     <button class="btn sm" style="margin-top:8px">Ajouter le créneau à cette date</button></form>`;
 
-  const table = rows.length ? `<div class="card" style="padding:0;overflow-x:auto"><table class="tbl"><thead><tr><th>Date</th><th>Semestre</th><th>Horaires</th><th>Matière</th><th>Salle</th><th></th></tr></thead><tbody>
+  const table = rows.length ? `<div class="card" style="padding:0;overflow-x:auto"><table class="tbl"><thead><tr><th>Date</th><th>Semestre</th><th>Type</th><th>Horaires</th><th>Matière</th><th>Salle</th><th></th></tr></thead><tbody>
       ${rows.map((rw) => {
     const dateText = rw.slot_date ? adminDateLabel(rw.slot_date) : `${DAY_NAMES[rw.day - 1]} · hebdomadaire`;
     const semText = rw.semester_number ? `S${rw.semester_number}` : '—';
-    return `<tr><td>${esc(dateText)}</td><td>${esc(semText)}</td><td class="n" style="text-align:left">${esc(rw.start)}–${esc(rw.end)}</td><td>${esc(rw.cname || rw.title || '')}</td><td>${esc(rw.room || '—')}</td>
+    const typeText = rw.slot_type === 'exam' ? 'Examen' : 'Cours';
+    return `<tr><td>${esc(dateText)}</td><td>${esc(semText)}</td><td>${esc(typeText)}</td><td class="n" style="text-align:left">${esc(rw.start)}–${esc(rw.end)}</td><td>${esc(rw.cname || rw.title || '')}</td><td>${esc(rw.room || '—')}</td>
         <td class="r"><form method="post" action="${url('/admin/emploi/del', req.ctx)}" style="display:inline">${hiddenT(req.ctx.t, { th: req.ctx.th })}<input type="hidden" name="id" value="${rw.id}"/><input type="hidden" name="level" value="${levelId}"/><input type="hidden" name="slot_date" value="${esc(selectedDate)}"/><button class="btn sm danger mini">Supprimer</button></form></td></tr>`;
   }).join('')}
     </tbody></table></div>` : `<div class="empty">Aucun créneau pour ${esc(adminDateLabel(selectedDate))}. Ajoutez-en ci-dessous.</div>`;
@@ -1646,8 +1649,9 @@ r.post('/admin/emploi/add', need('admin'), H(async (req, res) => {
   const title = courseId ? null : String(req.body.title || '').trim().slice(0, 120);
   if (!courseId && !title) throw badRequest('Choisissez une matière ou saisissez un intitulé libre');
   const room = String(req.body.room || '').trim().slice(0, 60) || null;
-  await db.prepare('INSERT INTO schedule_slots (class_id, semester_id, course_id, title, slot_date, day, start, end, room) VALUES (?,?,?,?,?,?,?,?,?)')
-    .run(owner.id, semesterId, courseId, title, selectedDate, day, start, end, room);
+  const slotType = req.body.slot_type === 'exam' ? 'exam' : 'course';
+  await db.prepare('INSERT INTO schedule_slots (class_id, semester_id, course_id, title, slot_date, slot_type, day, start, end, room) VALUES (?,?,?,?,?,?,?,?,?,?)')
+    .run(owner.id, semesterId, courseId, title, selectedDate, slotType, day, start, end, room);
   res.redirect(303, url('/admin/emploi', { ...req.ctx, level: owner.level_id, date: selectedDate, ok: 'Créneau ajouté' }));
 }));
 

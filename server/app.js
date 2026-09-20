@@ -39,6 +39,11 @@ export function ensureBootstrap() {
     } catch (e) {
       if (!/duplicate column|already exists/i.test(String(e?.message || e))) throw e;
     }
+    try {
+      await db.exec("ALTER TABLE schedule_slots ADD COLUMN slot_type TEXT NOT NULL DEFAULT 'course'");
+    } catch (e) {
+      if (!/duplicate column|already exists/i.test(String(e?.message || e))) throw e;
+    }
     await db.exec('CREATE INDEX IF NOT EXISTS idx_slots_date ON schedule_slots(class_id, slot_date, start)');
     /* Les anciennes annonces ciblées par classe restent lisibles sans exposer cette
        notion dans l’interface : elles deviennent générales, sans supprimer le texte. */

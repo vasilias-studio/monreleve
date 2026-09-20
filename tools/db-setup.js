@@ -45,6 +45,11 @@ async function ensureScheduleDateColumn() {
   } catch (e) {
     if (!/duplicate column|already exists/i.test(String(e?.message || e))) throw e;
   }
+  try {
+    await db.exec("ALTER TABLE schedule_slots ADD COLUMN slot_type TEXT NOT NULL DEFAULT 'course'");
+  } catch (e) {
+    if (!/duplicate column|already exists/i.test(String(e?.message || e))) throw e;
+  }
   await db.exec('CREATE INDEX IF NOT EXISTS idx_slots_date ON schedule_slots(class_id, slot_date, start)');
 }
 

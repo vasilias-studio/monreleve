@@ -48,15 +48,15 @@ await tx(async () => {
       if (sane && !FORCE) { console.log(`  · classe ${klass.id} / ${sem.name} : grille déjà saine (${courses.length} matières) → inchangée`); continue; }
 
       await db.prepare('DELETE FROM schedule_slots WHERE class_id=? AND semester_id=?').run(klass.id, sem.id);
-      const ins = await db.prepare('INSERT INTO schedule_slots (class_id, semester_id, course_id, title, day, start, end, room) VALUES (?,?,?,?,?,?,?,?)');
+      const ins = await db.prepare('INSERT INTO schedule_slots (class_id, semester_id, course_id, title, slot_type, day, start, end, room) VALUES (?,?,?,?,?,?,?,?,?)');
       for (let k = 0; k < courses.length; k++) {
         const c = courses[k];
         const day = Math.min(1 + Math.floor(k / HOURS.length), 5);   /* lundi→vendredi */
         const start = HOURS[k % HOURS.length];
-        await ins.run(klass.id, sem.id, c.id, null, day, start, END_OF[start], ROOMS[k % ROOMS.length]);
+        await ins.run(klass.id, sem.id, c.id, null, 'course', day, start, END_OF[start], ROOMS[k % ROOMS.length]);
       }
       /* créneau libre du samedi matin : cas typique d'un intitulé sans matière rattachée */
-      await ins.run(klass.id, sem.id, null, 'Examen mi-parcours', 6, '08:00', '10:00', 'Amphi A');
+      await ins.run(klass.id, sem.id, null, 'Examen mi-parcours', 'exam', 6, '08:00', '10:00', 'Amphi A');
       filled++;
       const byDay = await db.prepare('SELECT day, COUNT(*) n FROM schedule_slots WHERE class_id=? AND semester_id=? GROUP BY day ORDER BY day').all(klass.id, sem.id);
       console.log(`  ✓ classe ${klass.id} (${klass.name}) / ${sem.name} : ${courses.length + 1} créneaux — ` +

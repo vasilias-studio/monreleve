@@ -104,12 +104,13 @@ check('upsert : updated_at renseigné', /^\d{4}-\d{2}-\d{2} /.test(String(n?.upd
 const slot = await db.prepare('INSERT INTO schedule_slots (class_id, semester_id, course_id, day, start, end, room) VALUES (?,?,?,?,?,?,?)')
   .run(cls.lastInsertRowid, sem.lastInsertRowid, mat.lastInsertRowid, 1, '08:00', '10:00', 'Amphi A');
 check('colonne « end » insérée', Number.isInteger(slot.lastInsertRowid));
-const sl = await db.prepare('SELECT sl.day AS dday, sl.start, sl.end, sl.room FROM schedule_slots sl WHERE sl.class_id=?').get(cls.lastInsertRowid);
+const sl = await db.prepare('SELECT sl.day AS dday, sl.start, sl.end, sl.room, sl.slot_type FROM schedule_slots sl WHERE sl.class_id=?').get(cls.lastInsertRowid);
 check('colonne « end » relue', sl?.end === '10:00', JSON.stringify(sl));
-const datedSlot = await db.prepare('INSERT INTO schedule_slots (class_id, semester_id, course_id, slot_date, day, start, end, room) VALUES (?,?,?,?,?,?,?,?)')
-  .run(cls.lastInsertRowid, sem.lastInsertRowid, mat.lastInsertRowid, '2026-09-21', 1, '10:00', '12:00', 'B201');
-const dated = await db.prepare('SELECT slot_date, day FROM schedule_slots WHERE id=?').get(datedSlot.lastInsertRowid);
-check('créneau daté conservé', dated?.slot_date === '2026-09-21' && Number(dated?.day) === 1, JSON.stringify(dated));
+check('type cours par défaut', sl?.slot_type === 'course', JSON.stringify(sl));
+const examSlot = await db.prepare('INSERT INTO schedule_slots (class_id, semester_id, course_id, slot_date, slot_type, day, start, end, room) VALUES (?,?,?,?,?,?,?,?,?)')
+  .run(cls.lastInsertRowid, sem.lastInsertRowid, mat.lastInsertRowid, '2026-09-21', 'exam', 1, '08:00', '12:00', 'B201');
+const exam = await db.prepare('SELECT slot_date, slot_type, day FROM schedule_slots WHERE id=?').get(examSlot.lastInsertRowid);
+check('type examen conservé', exam?.slot_type === 'exam' && exam?.slot_date === '2026-09-21', JSON.stringify(exam));
 
 /* ── 9. clé primaire composite (announcement_likes) ── */
 const like1 = await db.prepare('INSERT INTO announcement_likes (announcement_id, user_id) VALUES (?,?) ON CONFLICT DO NOTHING').run(ou.lastInsertRowid, u1.lastInsertRowid);
