@@ -83,15 +83,15 @@ const statusLabel = { validee: ['Validée', 'ok'], non_validee: ['Non validée',
 const pubLabel = { published: ['Résultats publiés', 'info'], locked: ['Verrouillé', 'warn'], draft: ['Brouillon', 'gray'] };
 
 /* ───────────────────────── données réelles (base) ───────────────────────── */
-const template = db.prepare('SELECT * FROM templates WHERE id=1').get();
-const tree = loadTemplateTree(1);
+const template = await db.prepare('SELECT * FROM templates WHERE id=1').get();
+const tree = await loadTemplateTree(1);
 const rules = resolveRules(template);
-const stud = db.prepare('SELECT * FROM students WHERE id=1').get();
+const stud = await db.prepare('SELECT * FROM students WHERE id=1').get();
 const ids = tree.flatMap((s) => s.units.flatMap((u) => u.courses.map((c) => c.id)));
-const gmap = (src) => { const m = new Map(); for (const g of db.prepare(`SELECT course_id, normal, rattrapage FROM grades WHERE student_id=? AND source=? AND course_id IN (${ids.map(() => '?').join(',')})`).all(stud.id, src, ...ids)) m.set(g.course_id, g); return m; };
-const personal = computeReleve(template, tree, gmap('personal'));
-const official = computeReleve(template, tree, gmap('official'));
-const pubs = {}; for (const s of tree) pubs[s.id] = db.prepare('SELECT status FROM publications WHERE semester_id=?').get(s.id)?.status || 'draft';
+const gmap = async (src) => { const m = new Map(); for (const g of await db.prepare(`SELECT course_id, normal, rattrapage FROM grades WHERE student_id=? AND source=? AND course_id IN (${ids.map(() => '?').join(',')})`).all(stud.id, src, ...ids)) m.set(g.course_id, g); return m; };
+const personal = computeReleve(template, tree, await gmap('personal'));
+const official = computeReleve(template, tree, await gmap('official'));
+const pubs = {}; for (const s of tree) pubs[s.id] = (await db.prepare('SELECT status FROM publications WHERE semester_id=?').get(s.id))?.status || 'draft';
 const counts = personal.counts;
 const pct = Math.round((personal.creditsEarned / personal.creditsExpected) * 100);
 
@@ -213,7 +213,7 @@ function screen(name, w, h, body, id) {
   b += `${text(16, y + 6, 'Calendrier — Semestre 3', { size: 15, weight: 800 })}`; y += 24;
   b += `<g id="chips-semestre">${rect(16, y, 56, 24, { r: 999, fill: C.primarySoft, stroke: C.line })}${text(44, y + 16, 'S3', { size: 11, weight: 700, fill: C.primary, anchor: 'middle' })}${rect(78, y, 56, 24, { r: 999, fill: C.card, stroke: C.line })}${text(106, y + 16, 'S4', { size: 11, weight: 600, fill: C.muted, anchor: 'middle' })}</g>`; y += 34;
   const DAYS = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi'];
-  const slotsQ = db.prepare(`SELECT sl.day, sl.start, sl.end, sl.room, c.name FROM schedule_slots sl LEFT JOIN courses c ON c.id = sl.course_id WHERE sl.semester_id = (SELECT id FROM semesters WHERE template_id = 1 AND number = 3) AND sl.class_id = (SELECT MIN(class_id) FROM students) ORDER BY sl.day, sl.start`).all();
+  const slotsQ = await db.prepare(`SELECT sl.day, sl.start, sl.end, sl.room, c.name FROM schedule_slots sl LEFT JOIN courses c ON c.id = sl.course_id WHERE sl.semester_id = (SELECT id FROM semesters WHERE template_id = 1 AND number = 3) AND sl.class_id = (SELECT MIN(class_id) FROM students) ORDER BY sl.day, sl.start`).all();
   const byDay = {};
   for (const r of slotsQ) (byDay[r.day] ||= []).push(r);
   for (let d = 1; d <= 5; d++) {
@@ -246,19 +246,19 @@ function adminChrome(title, extra = '') {
 }
 {
   let b = adminChrome('Tableau de bord');
-  const st4 = [['Étudiants', 2], ['Comptes', db.prepare('SELECT COUNT(*) n FROM users').get().n], ['Modèles de relevés', db.prepare('SELECT COUNT(*) n FROM templates').get().n], ['Semestres publiés', db.prepare("SELECT COUNT(*) n FROM publications WHERE status IN ('published','locked')").get().n]];
+  const st4 = [['Étudiants', 2], ['Comptes', (await db.prepare('SELECT COUNT(*) n FROM users').get()).n], ['Modèles de relevés', (await db.prepare('SELECT COUNT(*) n FROM templates').get()).n], ['Semestres publiés', (await db.prepare("SELECT COUNT(*) n FROM publications WHERE status IN ('published','locked')").get()).n]];
   b += `<g id="kpi-admin">${st4.map(([k, v], i) => `<g>${rect(24 + i * 313, 150, 301, 76, { r: 2, fill: C.card, stroke: C.line })}${text(44 + i * 313, 186, String(v), { size: 24, weight: 850 })}${text(44 + i * 313, 208, k, { size: 11, weight: 600, fill: C.muted })}</g>`).join('')}</g>`;
   b += `<g id="actions-admin">${btn(24, 242, 190, 40, 'Gérer les étudiants', { size: 12 })}${btn(224, 242, 186, 40, 'Importer un Excel', { size: 12 })}${btn(420, 242, 168, 40, 'Modèles & règles', { variant: 'ghost', size: 12 })}${btn(598, 242, 158, 40, 'Référentiels', { variant: 'ghost', size: 12 })}</g>`;
   b += card(24, 300, 620, 260, 'derniers-inscrits');
   b += text(44, 328, 'Derniers inscrits', { size: 12, weight: 800 });
-  const recents = db.prepare(`SELECT u.last_name, u.first_name, s.matricule, p.name AS program FROM students s JOIN users u ON u.id=s.user_id LEFT JOIN programs p ON p.id=s.program_id ORDER BY s.created_at DESC, s.id DESC LIMIT 5`).all();
+  const recents = await db.prepare(`SELECT u.last_name, u.first_name, s.matricule, p.name AS program FROM students s JOIN users u ON u.id=s.user_id LEFT JOIN programs p ON p.id=s.program_id ORDER BY s.created_at DESC, s.id DESC LIMIT 5`).all();
   recents.forEach((s, i) => {
     const y = 342 + i * 42;
     b += `${rect(44, y, 580, 36, { r: 2, fill: C.card2 })}${text(58, y + 23, `${s.last_name} ${s.first_name}`, { size: 12, weight: 700 })}${text(612, y + 23, `${s.program || '—'} · ${s.matricule}`, { size: 10.5, fill: C.muted, anchor: 'end' })}`;
   });
   b += card(664, 300, 592, 260, 'par-filiere');
   b += text(684, 328, 'Répartition par filière', { size: 12, weight: 800 });
-  const byp = db.prepare('SELECT p.name, COUNT(s.id) n FROM students s JOIN programs p ON p.id=s.program_id GROUP BY p.id ORDER BY n DESC').all();
+  const byp = await db.prepare('SELECT p.name, COUNT(s.id) n FROM students s JOIN programs p ON p.id=s.program_id GROUP BY p.id ORDER BY n DESC').all();
   let cx = 684; for (const p of byp) { const lab = `${p.name} · ${p.n}`; b += chip(cx, 344, lab, 'violet'); cx += chipW(lab) + 8; }
   screen('10-admin-tableau-de-bord', 1280, 620, b);
 }
@@ -267,7 +267,7 @@ function adminChrome(title, extra = '') {
 {
   let b = adminChrome('Étudiants', `<text x="140" y="132" ${F(11, 500)} fill="${C.muted}">recherche + création</text>`);
   b += `<g id="recherche">${rect(24, 150, 1232, 52, { r: 2, fill: C.card, stroke: C.line })}${rect(44, 160, 700, 32, { r: 10, fill: C.bgSoft, stroke: C.line })}${text(58, 181, 'Rechercher nom, e-mail, matricule…', { size: 11.5, fill: C.muted })}${btn(760, 160, 92, 32, 'Chercher', { variant: 'ghost', size: 11.5 })}</g>`;
-  const rows = db.prepare(`SELECT u.last_name, u.first_name, u.email, s.matricule, p.name AS program, l.name AS level, u.is_active FROM students s JOIN users u ON u.id=s.user_id LEFT JOIN programs p ON p.id=s.program_id LEFT JOIN levels l ON l.id=s.level_id ORDER BY u.last_name LIMIT 4`).all();
+  const rows = await db.prepare(`SELECT u.last_name, u.first_name, u.email, s.matricule, p.name AS program, l.name AS level, u.is_active FROM students s JOIN users u ON u.id=s.user_id LEFT JOIN programs p ON p.id=s.program_id LEFT JOIN levels l ON l.id=s.level_id ORDER BY u.last_name LIMIT 4`).all();
   let y = 218;
   b += `<g id="table-etudiants">${rect(24, y, 1232, 40, { r: 12, fill: C.card2 })}${['NOM', 'MATRICULE', 'FILIÈRE', 'NIVEAU', 'COMPTE'].map((h, i) => text(44 + [0, 340, 520, 720, 880][i], y + 26, h, { size: 9.5, weight: 700, fill: C.muted })).join('')}</g>`;
   y += 40;

@@ -13,22 +13,34 @@ fourni (semestres, UE, matières, crédits, règles de calcul).
 
 ## 0. Mise en ligne
 
-Tout est prêt pour un hébergement gratuit : `Dockerfile`, `render.yaml` (déploiement Render en
-un clic), `deploy/install-vm.sh` (VM Oracle/VPS + systemd + sauvegarde quotidienne),
-`deploy/docker-compose.yml` + `Caddy` (HTTPS automatique) et
-`.github/workflows/site-statique.yml` (publication du site statique sur GitHub Pages).
+**Vercel (application) + Supabase (base de données)** : configuration prête dans le dépôt —
+`vercel.json`, `api/index.js` (fonction sans serveur), `server/pgshim.js` (traduction des requêtes
+vers PostgreSQL) et `tools/db-setup.js` (création du schéma et des données de départ).
+Procédure pas à pas, variables d'environnement et dépannage :
+**[DEPLOIEMENT-VERCEL.md](DEPLOIEMENT-VERCEL.md)**.
 
-Comparatif des offres gratuites, pièges (disque éphémère = notes perdues), et procédures
-détaillées : **[DEPLOIEMENT.md](DEPLOIEMENT.md)**.
+La même application tourne **sans aucune modification** en local avec SQLite :
+
+```bash
+npm install && npm run serve          # base SQLite dans data/
+npm run vercel:local                  # émulation de la fonction Vercel (PostgreSQL embarqué)
+```
+
+Autres hébergements gratuits (Docker, VM Oracle/VPS avec `deploy/install-vm.sh`, Render,
+site statique sur GitHub Pages) et comparatif des offres : **[DEPLOIEMENT.md](DEPLOIEMENT.md)**.
 
 ---
 
 ## 1. Démarrage rapide
 
 ```bash
-npm install            # dépendances serveur (express, better-sqlite3, JWT, bcrypt, xlsx, multer, pdfkit)
+npm install            # dépendances serveur (express, JWT, bcrypt, xlsx, multer, pdfkit, pg)
 npm run serve          # → http://localhost:4000  (site HTML + API, port unique)
 ```
+
+`better-sqlite3` (base locale) est une dépendance *optionnelle* : elle est installée
+automatiquement en local, et ignorée lors d'un déploiement PostgreSQL
+(`npm install --omit=optional`), ce qui évite toute compilation native en ligne.
 
 C'est tout : pas de build, pas de Vite. **Si la base est vide, le serveur la crée et la remplit
 automatiquement** (référentiels + modèle L2 issu de l'Excel + comptes de démo).
@@ -170,7 +182,8 @@ Ajouter L4, M1, une filière, une année, un établissement = **données**, pas 
 
 Étapes, toutes en formulaires HTML sans JS :
 
-1. **Téléverser** `.xlsx/.xls` (8 Mo max) → la feuille est stockée dans `data/uploads`.
+1. **Téléverser** `.xlsx/.xls` (12 Mo max) → le classeur est rangé dans la table `uploads` de la base
+   (aucun fichier sur disque : c'est ce qui permet le déploiement sans serveur, puis purgé après 24 h).
 2. **Choisir** : feuille, mode — *structure de relevé* (type `Relevé de notes.xlsx`) ou
    *notes plates* —, modèle cible, et pour le mode notes, le **mapping des colonnes**
    (Matrice → matricule, Matière, Note, Rattrapage, Coefficient, Crédits ; suggestions automatiques).
@@ -187,14 +200,28 @@ Ajouter L4, M1, une filière, une année, un établissement = **données**, pas 
 | `npm run serve` | site + API sur http://localhost:4000 (auto-seed si base vide) |
 | `npm run seed` / `-- --reset` | (re)créer la structure depuis l'Excel fourni |
 | `npm run create-admin -- …` | premier compte administrateur |
+| `npm run backup` | sauvegarde à chaud de la base SQLite (`data/backups`, 14 conservées) |
+| `npm run test:pg` | 25 contrôles de la couche PostgreSQL (moteur PostgreSQL embarqué, sans réseau) |
+| `npm run test:http` | 63 contrôles de l'application en marche (pages, API, import Excel, PDF, permissions) |
+| `npm run vercel:local` | émulation locale de la fonction Vercel (avec PostgreSQL embarqué) |
+| `npm run pg:schema` / `pg:seed` / `pg:check` | préparation d'une base Supabase (depuis le poste) |
 | `PORT=8080 npm run serve` | changer de port |
 | `MAIL_DEMO=0` | désactive le renvoi du lien de reset à l'écran (brancher SMTP alors) |
 
+Variables d'environnement : voir `.env.example` (`DATABASE_URL`, `SESSION_SECRET`, `DB_DRIVER`,
+`UPLOAD_MAX_MB`…).
+
 ## 6. Vers la production
 
+- **PostgreSQL (Supabase) : fait.** La base est choisie par `DATABASE_URL` ; le schéma est engendré
+  automatiquement depuis la description SQLite (`server/pgshim.js`) et le comportement vérifié sur un
+  vrai moteur PostgreSQL (`npm run test:pg`, 25 contrôles). Procédure : `DEPLOIEMENT-VERCEL.md`.
+- **Sans serveur : fait.** `api/index.js` expose la même application à Vercel ; les classeurs importés
+  vivent dans la base, et la clé de session passe par `SESSION_SECRET` (pas de disque partagé).
 - **SMTP** : brancher l'envoi réel du lien de réinitialisation (`// MAIL HOOK` dans `server/routes/auth.js`).
-- **PostgreSQL/MySQL** : le schéma est dans `server/db.js` (SQL standard + `tx()`) — portage direct.
-- HTTPS derrière un reverse proxy (Caddy/Nginx). En production « classique », le cookie httpOnly
-  suffit ; le mode `?t=` n'est une commodité que pour les aperçus sans cookies.
+- **HTTPS** derrière un reverse proxy (Caddy/Nginx) : `deploy/docker-compose.yml` fournit déjà
+  l'automatisme. En ligne, le cookie httpOnly suffit ; le mode `?t=` n'est qu'une commodité d'aperçu.
+- **Sécurité** : changez le mot de passe `admin123` après la mise en ligne, et définissez
+  `SESSION_SECRET` avec une valeur propre à votre installation.
 - La **PWA mobile** (dossier `client/`) reste utilisable : réinstaller vite/react en devDependencies,
   `npx vite build`, la même API JSON sert les deux interfaces. Capacitor inchangé (`--web-dir dist`).

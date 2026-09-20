@@ -25,36 +25,36 @@ const DEMO = !args.includes('--no-demo');
 
 if (RESET) {
   console.log('[seed] Réinitialisation de la base…');
-  db.exec(`DELETE FROM grades; DELETE FROM publications; DELETE FROM imports; DELETE FROM courses; DELETE FROM units;
+  await db.exec(`DELETE FROM grades; DELETE FROM publications; DELETE FROM imports; DELETE FROM courses; DELETE FROM units;
     DELETE FROM semesters; DELETE FROM templates; DELETE FROM students; DELETE FROM admins; DELETE FROM users;
     DELETE FROM classes; DELETE FROM academic_years; DELETE FROM levels; DELETE FROM programs; DELETE FROM institutions;
     DELETE FROM sqlite_sequence;`);
 }
 
-const getOne = (sql, ...p) => db.prepare(sql).get(...p);
-const insert = (sql, ...p) => db.prepare(sql).run(...p).lastInsertRowid;
+const getOne = async (sql, ...p) => await db.prepare(sql).get(...p);
+const insert = async (sql, ...p) => (await db.prepare(sql).run(...p)).lastInsertRowid;
 
 /* -------- Référentiels (uniquement s'ils manquent) -------------------- */
-const institutionId = getOne(`SELECT id FROM institutions WHERE name=?`, 'Université — Faculté Économie & Gestion')?.id
-  ?? insert(`INSERT INTO institutions (name, code) VALUES (?, ?)`, 'Université — Faculté Économie & Gestion', 'FEG');
-const programId = getOne(`SELECT id FROM programs WHERE name=? AND institution_id=?`, 'Gestion', institutionId)?.id
-  ?? insert(`INSERT INTO programs (institution_id, name, code) VALUES (?,?,?)`, institutionId, 'Gestion', 'GES');
-insert(`INSERT OR IGNORE INTO programs (institution_id, name, code) VALUES (?,?,?)`, institutionId, 'Économie', 'ECO');
-insert(`INSERT OR IGNORE INTO programs (institution_id, name, code) VALUES (?,?,?)`, institutionId, 'Marketing', 'MKT');
+const institutionId = (await getOne(`SELECT id FROM institutions WHERE name=?`, 'Université — Faculté Économie & Gestion'))?.id
+  ?? await insert(`INSERT INTO institutions (name, code) VALUES (?, ?)`, 'Université — Faculté Économie & Gestion', 'FEG');
+const programId = (await getOne(`SELECT id FROM programs WHERE name=? AND institution_id=?`, 'Gestion', institutionId))?.id
+  ?? await insert(`INSERT INTO programs (institution_id, name, code) VALUES (?,?,?)`, institutionId, 'Gestion', 'GES');
+await insert(`INSERT OR IGNORE INTO programs (institution_id, name, code) VALUES (?,?,?)`, institutionId, 'Économie', 'ECO');
+await insert(`INSERT OR IGNORE INTO programs (institution_id, name, code) VALUES (?,?,?)`, institutionId, 'Marketing', 'MKT');
 
 for (const [name, cycle, ord] of [['L1', 'Licence', 1], ['L2', 'Licence', 2], ['L3', 'Licence', 3], ['M1', 'Master', 4]]) {
-  insert(`INSERT OR IGNORE INTO levels (name, cycle, ord) VALUES (?,?,?)`, name, cycle, ord);
+  await insert(`INSERT OR IGNORE INTO levels (name, cycle, ord) VALUES (?,?,?)`, name, cycle, ord);
 }
-const level2Id = getOne(`SELECT id FROM levels WHERE name='L2'`).id;
-const level1Id = getOne(`SELECT id FROM levels WHERE name='L1'`).id;
+const level2Id = (await getOne(`SELECT id FROM levels WHERE name='L2'`)).id;
+const level1Id = (await getOne(`SELECT id FROM levels WHERE name='L1'`)).id;
 
 const YEAR = '2026-2027';
-const yearId = getOne(`SELECT id FROM academic_years WHERE label=?`, YEAR)?.id
-  ?? insert(`INSERT INTO academic_years (label, start_year, is_current) VALUES (?,?,1)`, YEAR, 2026);
+const yearId = (await getOne(`SELECT id FROM academic_years WHERE label=?`, YEAR))?.id
+  ?? await insert(`INSERT INTO academic_years (label, start_year, is_current) VALUES (?,?,1)`, YEAR, 2026);
 
-const classId = getOne(`SELECT id FROM classes WHERE name=? AND program_id=? AND level_id=?`, 'Groupe A', programId, level2Id)?.id
-  ?? insert(`INSERT INTO classes (program_id, level_id, academic_year_id, name) VALUES (?,?,?,?)`, programId, level2Id, yearId, 'Groupe A');
-insert(`INSERT OR IGNORE INTO classes (program_id, level_id, academic_year_id, name) VALUES (?,?,?,?)`, programId, level1Id, yearId, 'Groupe A');
+const classId = (await getOne(`SELECT id FROM classes WHERE name=? AND program_id=? AND level_id=?`, 'Groupe A', programId, level2Id))?.id
+  ?? await insert(`INSERT INTO classes (program_id, level_id, academic_year_id, name) VALUES (?,?,?,?)`, programId, level2Id, yearId, 'Groupe A');
+await insert(`INSERT OR IGNORE INTO classes (program_id, level_id, academic_year_id, name) VALUES (?,?,?,?)`, programId, level1Id, yearId, 'Groupe A');
 
 /* -------- Règles de calcul reproduisant la logique de l'Excel -------- */
 const RULES = {
@@ -68,7 +68,7 @@ const RULES = {
   pass_threshold: 10,
 };
 
-let templateId = getOne(`SELECT id FROM templates WHERE program_id=? AND level_id=? AND academic_year_id=?`, programId, level2Id, yearId)?.id;
+let templateId = (await getOne(`SELECT id FROM templates WHERE program_id=? AND level_id=? AND academic_year_id=?`, programId, level2Id, yearId))?.id;
 
 /* -------- Construction du modèle depuis le fichier Excel -------------- */
 if (!templateId && fs.existsSync(XLSX_PATH)) {
@@ -77,19 +77,19 @@ if (!templateId && fs.existsSync(XLSX_PATH)) {
   const parsed = parseReleveStructure(rows);
   if (!parsed.ok) { console.error('[seed] Échec du parsing :', parsed.error); process.exit(1); }
   for (const w of parsed.warnings || []) console.log('[seed] attention :', w);
-  tx(() => {
-    templateId = insert(`INSERT INTO templates (program_id, level_id, academic_year_id, name, rules_json) VALUES (?,?,?,?,?)`,
+  await tx(async () => {
+    templateId = await insert(`INSERT INTO templates (program_id, level_id, academic_year_id, name, rules_json) VALUES (?,?,?,?,?)`,
       programId, level2Id, yearId, `L2 — Gestion — ${YEAR}`, JSON.stringify(RULES));
     let sOrd = 0;
     for (const s of parsed.semesters) {
-      const si = insert(`INSERT INTO semesters (template_id, number, name, ects_expected, ord) VALUES (?,?,?,?,?)`,
+      const si = await insert(`INSERT INTO semesters (template_id, number, name, ects_expected, ord) VALUES (?,?,?,?,?)`,
         templateId, s.number, s.name || `Semestre ${s.number}`, s.ects || 30, sOrd++);
       let uOrd = 0;
       for (const u of s.units) {
-        const ui = insert(`INSERT INTO units (semester_id, code, name, ord) VALUES (?,?,?,?)`, si, u.code, u.name, uOrd++);
+        const ui = await insert(`INSERT INTO units (semester_id, code, name, ord) VALUES (?,?,?,?)`, si, u.code, u.name, uOrd++);
         let cOrd = 0;
         for (const c of u.courses) {
-          insert(`INSERT INTO courses (unit_id, name, coefficient, credits, ord) VALUES (?,?,?,?,?)`,
+          await insert(`INSERT INTO courses (unit_id, name, coefficient, credits, ord) VALUES (?,?,?,?,?)`,
             ui, c.name, c.coefficient ?? 1, c.credits ?? 1, cOrd++);
         }
       }
@@ -105,20 +105,20 @@ if (!templateId && fs.existsSync(XLSX_PATH)) {
 
 /* Modèles L1/L3 vides pour montrer l'évolutivité (crédités 30 par semestre). */
 if (templateId) {
-  const hasL1 = getOne(`SELECT id FROM templates WHERE program_id=? AND level_id=?`, programId, level1Id);
+  const hasL1 = await getOne(`SELECT id FROM templates WHERE program_id=? AND level_id=?`, programId, level1Id);
   if (!hasL1) {
-    const l1 = insert(`INSERT INTO templates (program_id, level_id, academic_year_id, name, rules_json) VALUES (?,?,?,?,?)`,
+    const l1 = await insert(`INSERT INTO templates (program_id, level_id, academic_year_id, name, rules_json) VALUES (?,?,?,?,?)`,
       programId, level1Id, yearId, `L1 — Gestion — ${YEAR}`, JSON.stringify(RULES));
-    for (const n of [1, 2]) insert(`INSERT INTO semesters (template_id, number, name, ects_expected, ord) VALUES (?,?,?,?,?)`, l1, n, `Semestre ${n}`, 30, n);
+    for (const n of [1, 2]) await insert(`INSERT INTO semesters (template_id, number, name, ects_expected, ord) VALUES (?,?,?,?,?)`, l1, n, `Semestre ${n}`, 30, n);
   }
 }
 
 /* -------- Comptes ------------------------------------------------------ */
-const admin = getOne(`SELECT u.id FROM users u JOIN admins a ON a.user_id=u.id WHERE u.email=?`, process.env.ADMIN_EMAIL || 'admin@univ.mg');
+const admin = await getOne(`SELECT u.id FROM users u JOIN admins a ON a.user_id=u.id WHERE u.email=?`, process.env.ADMIN_EMAIL || 'admin@univ.mg');
 if (!admin && DEMO) {
-  const uid = insert(`INSERT INTO users (email, password_hash, role, first_name, last_name) VALUES (?,?, 'admin', ?, ?)`,
+  const uid = await insert(`INSERT INTO users (email, password_hash, role, first_name, last_name) VALUES (?,?, 'admin', ?, ?)`,
     'admin@univ.mg', hashPassword('admin123'), 'Cellule', 'Scolarité');
-  insert(`INSERT INTO admins (user_id, department) VALUES (?, ?)`, uid, 'Scolarité / FEG');
+  await insert(`INSERT INTO admins (user_id, department) VALUES (?, ?)`, uid, 'Scolarité / FEG');
   console.log('[seed] Admin démo : admin@univ.mg / admin123');
 }
 
@@ -127,28 +127,29 @@ if (DEMO && templateId) {
     { email: 'naina.randria@example.mg', first: 'Naina', last: 'Randria', mat: '2026-GES-0142', pw: 'etudiant123' },
     { email: 'tojo.hanta@example.mg', first: 'Tojo', last: 'Hanta', mat: '2026-GES-0143', pw: 'etudiant123' },
   ];
-  const courses = db.prepare(`SELECT c.id, s.number AS sem, u.code AS ue FROM courses c JOIN units u ON u.id=c.unit_id JOIN semesters s ON s.id=u.semester_id WHERE s.template_id=? ORDER BY s.ord, u.ord, c.ord`).all(templateId);
+  const courses = await db.prepare(`SELECT c.id, s.number AS sem, u.code AS ue FROM courses c JOIN units u ON u.id=c.unit_id JOIN semesters s ON s.id=u.semester_id WHERE s.template_id=? ORDER BY s.ord, u.ord, c.ord`).all(templateId);
   for (const d of demoStudents) {
-    if (getOne(`SELECT id FROM users WHERE email=?`, d.email)) continue;
-    tx(() => {
-      const uid = insert(`INSERT INTO users (email, password_hash, role, first_name, last_name) VALUES (?,?,?,?,?)`,
+    if (await getOne(`SELECT id FROM users WHERE email=?`, d.email)) continue;
+    await tx(async () => {
+      const uid = await insert(`INSERT INTO users (email, password_hash, role, first_name, last_name) VALUES (?,?,?,?,?)`,
         d.email, hashPassword(d.pw), 'student', d.last, d.first);
-      const sid = insert(`INSERT INTO students (user_id, matricule, program_id, level_id, class_id, academic_year_id) VALUES (?,?,?,?,?,?)`,
+      const sid = await insert(`INSERT INTO students (user_id, matricule, program_id, level_id, class_id, academic_year_id) VALUES (?,?,?,?,?,?)`,
         uid, d.mat, programId, level2Id, classId, yearId);
       // Notes personnelles plausibles pour la démo ; pour Naina : notes officielles + S3 publié.
       const rnd = (min, max) => Math.round((min + Math.random() * (max - min)) * 2) / 2;
-      courses.forEach((c, i) => {
+      /* boucle séquentielle : `forEach` n'attend pas, une erreur passerait inaperçue */
+      for (const c of courses) {
         const normal = rnd(6, 18);
         const rattr = normal < 10 ? rnd(8, 16) : null;
-        insert(`INSERT INTO grades (student_id, course_id, source, normal, rattrapage) VALUES (?,?,'personal',?,?)`, sid, c.id, normal, rattr);
+        await insert(`INSERT INTO grades (student_id, course_id, source, normal, rattrapage) VALUES (?,?,'personal',?,?)`, sid, c.id, normal, rattr);
         if (d.first === 'Naina') {
-          insert(`INSERT INTO grades (student_id, course_id, source, normal, rattrapage) VALUES (?,?,'official',?,?)`, sid, c.id, normal, rattr);
+          await insert(`INSERT INTO grades (student_id, course_id, source, normal, rattrapage) VALUES (?,?,'official',?,?)`, sid, c.id, normal, rattr);
         }
-      });
+      }
       if (d.first === 'Naina') {
-        const s3row = getOne(`SELECT id FROM semesters WHERE template_id=? AND number=3`, templateId);
+        const s3row = await getOne(`SELECT id FROM semesters WHERE template_id=? AND number=3`, templateId);
         if (s3row) {
-          db.prepare(`INSERT INTO publications (semester_id, status, published_by, published_at)
+          await db.prepare(`INSERT INTO publications (semester_id, status, published_by, published_at)
             VALUES (?,'published',(SELECT id FROM users WHERE role='admin' LIMIT 1),datetime('now'))`)
             .run(s3row.id);
         }

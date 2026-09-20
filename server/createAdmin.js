@@ -30,15 +30,15 @@ const ask = (question, def) => new Promise((resolve) => {
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { console.error('E-mail invalide'); process.exit(1); }
   if (!password || password.length < 8) { console.error('Mot de passe trop court (min. 8 caractères)'); process.exit(1); }
   const [last, first] = (nameArg || 'Administrateur Scolarité').split(/[\s,]+/);
-  tx(() => {
-    let uid = db.prepare('SELECT id FROM users WHERE email=?').get(email)?.id;
+  await tx(async () => {
+    let uid = (await db.prepare('SELECT id FROM users WHERE email=?').get(email))?.id;
     if (uid) {
-      db.prepare(`UPDATE users SET password_hash=?, role='admin', is_active=1 WHERE id=?`).run(hashPassword(password), uid);
+      await db.prepare(`UPDATE users SET password_hash=?, role='admin', is_active=1 WHERE id=?`).run(hashPassword(password), uid);
       console.log(`Compte existant réactivé et promu administrateur : ${email}`);
     } else {
-      uid = db.prepare(`INSERT INTO users (email, password_hash, role, last_name, first_name) VALUES (?,?,?,?,?)`)
-        .run(email.toLowerCase(), hashPassword(password), 'admin', last || 'Admin', first || '').lastInsertRowid;
-      db.prepare(`INSERT INTO admins (user_id, department) VALUES (?,?)`).run(uid, first || 'Administration');
+      uid = (await db.prepare(`INSERT INTO users (email, password_hash, role, last_name, first_name) VALUES (?,?,?,?,?)`)
+        .run(email.toLowerCase(), hashPassword(password), 'admin', last || 'Admin', first || '')).lastInsertRowid;
+      await db.prepare(`INSERT INTO admins (user_id, department) VALUES (?,?)`).run(uid, first || 'Administration');
     }
   });
   console.log(`✔ Administrateur prêt : ${email} — connectez-vous sur l'écran de connexion.`);

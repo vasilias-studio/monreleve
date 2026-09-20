@@ -14,7 +14,7 @@
    Usage : node tools/seed-emploi.js           (n'écrit rien si la grille est déjà saine)
            node tools/seed-emploi.js --force   (reconstruit la grille)
    ============================================================ */
-import db from '../server/db.js';
+import db, { tx } from '../server/db.js';
 
 const FORCE = process.argv.includes('--force');
 const HOURS = ['08:00', '10:00', '14:00'];       // 3 créneaux de 2 h par jour
@@ -22,21 +22,21 @@ const END_OF = { '08:00': '10:00', '10:00': '12:00', '14:00': '16:00' };
 const ROOMS = ['Amphi A', 'Amphi B', 'Salle 21', 'Salle 22', 'Labo informatique'];
 
 /** La grille est-elle saine ? (aucun chevauchement jour+horaire sur une même classe/semestre) */
-function gridIsSane(classId, semesterId) {
-  const rows = db.prepare('SELECT day, start, COUNT(*) n FROM schedule_slots WHERE class_id=? AND semester_id=? GROUP BY day, start').all(classId, semesterId);
+async function gridIsSane(classId, semesterId) {
+  const rows = await db.prepare('SELECT day, start, COUNT(*) n FROM schedule_slots WHERE class_id=? AND semester_id=? GROUP BY day, start').all(classId, semesterId);
   if (!rows.length) return false;
   return rows.every((r) => r.n === 1);
 }
 
-const classes = db.prepare('SELECT * FROM classes ORDER BY id').all();
+const classes = await db.prepare('SELECT * FROM classes ORDER BY id').all();
 let filled = 0, skipped = 0;
-db.transaction(() => {
+await tx(async () => {
   for (const klass of classes) {
-    const template = db.prepare('SELECT * FROM templates WHERE program_id=? ORDER BY id LIMIT 1').get(klass.program_id);
+    const template = await db.prepare('SELECT * FROM templates WHERE program_id=? ORDER BY id LIMIT 1').get(klass.program_id);
     if (!template) continue;
-    const sems = db.prepare('SELECT * FROM semesters WHERE template_id=? ORDER BY ord, number').all(template.id);
+    const sems = await db.prepare('SELECT * FROM semesters WHERE template_id=? ORDER BY ord, number').all(template.id);
     for (const sem of sems) {
-      const courses = db.prepare(`
+      const courses = await db.prepare(`
         SELECT c.id, c.name, u.code AS ucode
         FROM courses c JOIN units u ON u.id = c.unit_id
         WHERE u.semester_id = ? ORDER BY u.ord, c.ord, c.id`).all(sem.id);
@@ -44,26 +44,27 @@ db.transaction(() => {
         console.log(`  · classe ${klass.id} (${klass.name}) / ${sem.name} : aucune matière rattachée → laissé vide`);
         skipped++; continue;
       }
-      const sane = gridIsSane(klass.id, sem.id);
+      const sane = await gridIsSane(klass.id, sem.id);
       if (sane && !FORCE) { console.log(`  · classe ${klass.id} / ${sem.name} : grille déjà saine (${courses.length} matières) → inchangée`); continue; }
 
-      db.prepare('DELETE FROM schedule_slots WHERE class_id=? AND semester_id=?').run(klass.id, sem.id);
-      const ins = db.prepare('INSERT INTO schedule_slots (class_id, semester_id, course_id, title, day, start, end, room) VALUES (?,?,?,?,?,?,?,?)');
-      courses.forEach((c, k) => {
+      await db.prepare('DELETE FROM schedule_slots WHERE class_id=? AND semester_id=?').run(klass.id, sem.id);
+      const ins = await db.prepare('INSERT INTO schedule_slots (class_id, semester_id, course_id, title, day, start, end, room) VALUES (?,?,?,?,?,?,?,?)');
+      for (let k = 0; k < courses.length; k++) {
+        const c = courses[k];
         const day = Math.min(1 + Math.floor(k / HOURS.length), 5);   /* lundi→vendredi */
         const start = HOURS[k % HOURS.length];
-        ins.run(klass.id, sem.id, c.id, null, day, start, END_OF[start], ROOMS[k % ROOMS.length]);
-      });
+        await ins.run(klass.id, sem.id, c.id, null, day, start, END_OF[start], ROOMS[k % ROOMS.length]);
+      }
       /* créneau libre du samedi matin : cas typique d'un intitulé sans matière rattachée */
-      ins.run(klass.id, sem.id, null, 'Examen mi-parcours', 6, '08:00', '10:00', 'Amphi A');
+      await ins.run(klass.id, sem.id, null, 'Examen mi-parcours', 6, '08:00', '10:00', 'Amphi A');
       filled++;
-      const byDay = db.prepare('SELECT day, COUNT(*) n FROM schedule_slots WHERE class_id=? AND semester_id=? GROUP BY day ORDER BY day').all(klass.id, sem.id);
+      const byDay = await db.prepare('SELECT day, COUNT(*) n FROM schedule_slots WHERE class_id=? AND semester_id=? GROUP BY day ORDER BY day').all(klass.id, sem.id);
       console.log(`  ✓ classe ${klass.id} (${klass.name}) / ${sem.name} : ${courses.length + 1} créneaux — ` +
         byDay.map((d) => `${['lun', 'mar', 'mer', 'jeu', 'ven', 'sam'][d.day - 1]}:${d.n}`).join(' '));
     }
   }
 })();
 
-const tot = db.prepare('SELECT COUNT(*) c FROM schedule_slots').get().c;
+const tot = (await db.prepare('SELECT COUNT(*) c FROM schedule_slots').get()).c;
 console.log(`\n${filled} grille(s) remplie(s), ${skipped} laissée(s) vide(s) · ${tot} créneaux en base.`);
 if (!filled && !skipped) console.log('Aucune classe en base.');

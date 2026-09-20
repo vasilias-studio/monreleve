@@ -109,6 +109,12 @@ function analyser(fichier) {
 
   /* fonctions non nommées : rappels d'appel, fonctions appelées immédiatement (IIFE),
    * valeurs affectées… Toutes doivent pouvoir devenir `async` si elles touchent la base. */
+  /* variables contenant une requête préparée (exécutée plus loin : stmt.run…) */
+  info.porteurs = new Set();
+  parcours(ast, (n) => {
+    if (n.type === 'VariableDeclarator' && n.id?.type === 'Identifier' && estRequete(n.init)) info.porteurs.add(n.id.name);
+  });
+
   info.anonymes = [];
   const nommees = new Set([...info.fonctions.values()].map((n) => (n.type === 'Property' ? n.value : n)));
   parcours(ast, (n, anc) => {
@@ -155,7 +161,8 @@ while (change) {
         const imp = info.imports.get(c);
         return imp ? exportAsync.get(`${base(imp.source)}:${imp.nom}`) === true : false;
       });
-      if (requete || appelLocal || appelImport) { doitEtreAsync.set(k, true); change = true; }
+      const executePorteur = [...(info.appels.get(nom) || [])].some((c) => info.porteurs.has(c));
+      if (requete || appelLocal || appelImport || executePorteur) { doitEtreAsync.set(k, true); change = true; }
     }
   }
   for (const info of infos) {
@@ -248,11 +255,53 @@ for (const info of infos) {
     edits.push({ pos: noeud.start, texte: 'async ' });
   }
 
-  /* 3b. await devant les requêtes */
+  /* 3b. await devant l'EXÉCUTION de la requête.
+   *     Important : `db.prepare(sql).all(x).map(f)` doit devenir
+   *     `(await db.prepare(sql).all(x)).map(f)` — le `await` porte sur l'exécution,
+   *     sinon `.map` s'appliquerait à la promesse (erreur « .map is not a function »). */
+  const execution = (n) => {
+    let noeud = n;
+    for (let i = 0; i < 2; i++) {
+      const p2 = info.parents.get(noeud);
+      if (p2?.type === 'MemberExpression' && p2.object === noeud && !p2.computed && ['get', 'all', 'run'].includes(p2.property?.name)) { noeud = p2; continue; }
+      if (p2?.type === 'CallExpression' && p2.callee === noeud) { noeud = p2; break; }
+      break;
+    }
+    return noeud;
+  };
+  const continueApres = (n) => {
+    const p2 = info.parents.get(n);
+    if (p2?.type === 'MemberExpression' && p2.object === n) return true;
+    if (p2?.type === 'CallExpression' && p2.callee === n) return true;
+    if (p2?.type === 'ChainExpression' && p2.expression === n) return true;
+    return false;
+  };
   for (const r of info.requetes) {
     if (r.rappelANONYME) continue;
     if (info.parents.get(r.noeud)?.type === 'AwaitExpression') continue;
-    edits.push({ pos: chaine(r.noeud).start, texte: 'await ' });
+    const exec = execution(r.noeud);
+    if (info.parents.get(exec)?.type === 'AwaitExpression') continue;
+    const suite = info.parents.get(exec);
+    if (suite?.type === 'MemberExpression' && suite.property?.name === 'then') continue;   /* chaîne explicite */
+    if (continueApres(exec)) {
+      edits.push({ pos: exec.start, texte: '(await ' });
+      edits.push({ pos: exec.end, texte: ')' });
+    } else {
+      edits.push({ pos: exec.start, texte: 'await ' });
+    }
+  }
+
+  /* 3b-bis. requêtes préparées conservées dans une variable :
+   *         `const stmt = db.prepare(…)` puis `stmt.run(…)` → `await stmt.run(…)`. */
+  if (info.porteurs.size) {
+    parcours(info.ast, (n) => {
+      if (n.type !== 'CallExpression' || n.callee?.type !== 'MemberExpression' || n.callee.computed) return;
+      if (n.callee.object?.type !== 'Identifier' || !info.porteurs.has(n.callee.object.name)) return;
+      if (!['get', 'all', 'run'].includes(n.callee.property?.name)) return;
+      if (info.parents.get(n)?.type === 'AwaitExpression') return;
+      if (continueApres(n)) { edits.push({ pos: n.start, texte: '(await ' }); edits.push({ pos: n.end, texte: ')' }); }
+      else edits.push({ pos: n.start, texte: 'await ' });
+    });
   }
 
   /* 3c. await devant les appels de fonctions devenues async */

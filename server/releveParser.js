@@ -16,8 +16,14 @@ import fs from 'node:fs';
 const norm = (s) => String(s ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
 
 /** readFile non exposé par le build ESM du paquet : on charge le buffer nous-mêmes. */
-export function readWorkbook(filePath, opts = {}) {
-  return XLSX.read(fs.readFileSync(filePath), { type: 'buffer', ...opts });
+/**
+ * Lit un classeur depuis un CHEMIN de fichier ou depuis son CONTENU binaire.
+ * Le contenu binaire est ce qu'on utilise pour les fichiers importés : ils vivent
+ * dans la base (table `uploads`), pas sur un disque.
+ */
+export function readWorkbook(source, opts = {}) {
+  const data = Buffer.isBuffer(source) ? source : (source instanceof Uint8Array ? Buffer.from(source) : fs.readFileSync(source));
+  return XLSX.read(data, { type: 'buffer', ...opts });
 }
 
 /** Charge une feuille en matrice de cellules {v, f, t} (valeur + formule + type). */

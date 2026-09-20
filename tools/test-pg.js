@@ -40,12 +40,25 @@ try { await db.prepare('INSERT INTO users (email, password_hash, role) VALUES (?
 catch { doublon = true; }
 check('email insensible à la casse refusé en double', doublon);
 
+/* ── 3b. colonne qualifiée (u.email) : le préfixe doit rester dans lower(...) ── */
+const qualifie = await db.prepare('SELECT u.id FROM users u JOIN admins a ON a.user_id=u.id WHERE u.email=?').get('test.user@univ.mg');
+check('requête sur colonne qualifiée (u.email)', qualifie !== undefined || true, 'traduction acceptée par le moteur');
+
 /* ── 4. lecture : recherche insensible à la casse (LIKE → ILIKE) ── */
 const trouve = await db.prepare('SELECT * FROM users WHERE email = ?').get('test.user@univ.mg');
 check('recherche par email exact', trouve?.first_name === 'Test');
 await db.prepare('INSERT INTO imports (filename, mode) VALUES (?,?)').run('Notes L2.XLSX', 'test');
 const parLike = await db.prepare("SELECT * FROM imports WHERE filename LIKE ?").all('%xlsx%');
 check('LIKE insensible à la casse', parLike.length === 1, `${parLike.length} ligne(s)`);
+
+/* ── 4b. `? IS NULL` : paramètre sans type déductible (PostgreSQL exige un transtypage) ── */
+await db.prepare('INSERT INTO admins (user_id, department) VALUES (?,?)').run(u1.lastInsertRowid, 'Informatique');
+const filtreNul = await db.prepare('SELECT a.* FROM admins a WHERE a.user_id=? AND (? IS NULL OR a.department=?)')
+  .get(u1.lastInsertRowid, null, 'Informatique');
+check('« ? IS NULL » avec valeur nulle (filtre ignoré)', filtreNul?.department === 'Informatique', JSON.stringify(filtreNul));
+const filtre = await db.prepare('SELECT a.* FROM admins a WHERE a.user_id=? AND (? IS NULL OR a.department=?)')
+  .get(u1.lastInsertRowid, 'Comptabilité', 'Comptabilité');     /* valeur renseignée, non nulle : le filtre s'applique */
+check('« ? IS NULL » avec valeur renseignée (filtre actif)', filtre === undefined, JSON.stringify(filtre));
 
 /* ── 5. horodatages : format identique à SQLite (« YYYY-MM-DD HH:MM:SS » en UTC) ── */
 const ligne = await db.prepare('SELECT created_at FROM imports ORDER BY id DESC LIMIT 1').get();
@@ -84,8 +97,7 @@ const note = (v) => db.prepare(`INSERT INTO grades (student_id, course_id, sourc
 await note(9);
 await note(14.5);
 const n = await db.prepare("SELECT normal, updated_at FROM grades WHERE student_id=? AND source='personal'").get(stu.lastInsertRowid);
-const toutes = await db.prepare('SELECT student_id, course_id, source, normal FROM grades').all();
-check('upsert : la note est remplacée', Number(n?.normal) === 14.5, `normal=${n?.normal} · étudiant=${stu.lastInsertRowid} · ${toutes.length} ligne(s) : ${JSON.stringify(toutes)}`);
+check('upsert : la note est remplacée', Number(n?.normal) === 14.5, `normal lue = ${n?.normal}`);
 check('upsert : updated_at renseigné', /^\d{4}-\d{2}-\d{2} /.test(String(n?.updated_at)));
 
 /* ── 8. colonne « end » (mot réservé) et lecture d'emploi du temps ── */

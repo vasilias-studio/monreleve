@@ -1,3 +1,8 @@
+> **Pour l'application en ligne, la cible retenue est Vercel + Supabase** :
+> voir **[DEPLOIEMENT-VERCEL.md](DEPLOIEMENT-VERCEL.md)**. Le présent document décrit les autres
+> possibilités (application Docker/VM, copie statique sans base) ; il reste valable pour la
+> **copie statique** publiée sur GitHub Pages.
+
 # Hébergement gratuit — MonRelevé (application) et le site
 
 Document de proposition, avec les fichiers de déploiement déjà prêts dans le dépôt.

@@ -15,11 +15,13 @@
     "backup": "node tools/backup.js",
     "test:pg": "node tools/test-pg.js",
     "pg:schema": "node tools/db-setup.js schema",
-    "pg:seed": "node tools/db-setup.js seed"
+    "pg:seed": "node tools/db-setup.js seed",
+    "pg:check": "node tools/db-setup.js check",
+    "vercel:local": "node tools/serve-vercel.js",
+    "test:http": "node tools/test-http.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
-    "better-sqlite3": "^11.10.0",
     "express": "^4.21.2",
     "jsonwebtoken": "^9.0.2",
     "multer": "^1.4.5-lts.2",
@@ -35,5 +37,8 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^11.10.0"
   }
 }

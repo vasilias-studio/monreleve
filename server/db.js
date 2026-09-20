@@ -22,7 +22,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { createRequire } from 'node:module';
 import { toPostgres, postgresSchema, installTypeParsers, TYPE_PARSERS } from './pgshim.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -204,6 +203,14 @@ CREATE TABLE IF NOT EXISTS announcement_likes (  -- « J'aime » (un par personn
   PRIMARY KEY (announcement_id, user_id)
 );
 
+CREATE TABLE IF NOT EXISTS uploads (             -- classeurs Excel importés (stockés en base : pas de disque)
+  id TEXT PRIMARY KEY,                           -- identifiant public (utilisé dans les URL de l'aperçu)
+  name TEXT,                                     -- nom d'origine du fichier
+  content BLOB NOT NULL,                         -- contenu binaire (bytea en PostgreSQL)
+  size INTEGER,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS imports (             -- journal des imports Excel
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER REFERENCES users(id),
@@ -222,7 +229,14 @@ export const PG_SCHEMA = postgresSchema(SQLITE_DDL);
 /* ------------------------------------------------------------------ */
 async function createSqliteAdapter() {
   /* import dynamique : un déploiement Postgres n'a pas besoin du binaire natif */
-  const Database = (await import('better-sqlite3')).default;
+  let Database;
+  try {
+    Database = (await import('better-sqlite3')).default;
+  } catch {
+    throw new Error(
+      'Base de données introuvable : renseignez DATABASE_URL (PostgreSQL/Supabase) ou installez le moteur local '
+      + '(npm install better-sqlite3). Sur un hébergement sans serveur, DATABASE_URL est obligatoire.');
+  }
   const handle = new Database(DB_PATH);
   handle.pragma('journal_mode = WAL');
   handle.pragma('foreign_keys = ON');
@@ -266,7 +280,14 @@ function createPostgresAdapter(runner, name) {
     query: async (sql, params, mode) => {
       await ensureSchema();
       const { text, insert } = toPostgres(sql);
-      const r = await runner.query(text, params);
+      let r;
+      try {
+        r = await runner.query(text, params);
+      } catch (e) {
+        /* aide au diagnostic : montrer la requête traduite qui a échoué */
+        console.error(`[sql] échec du pilote ${name} : ${e.message}\n  requête : ${text.replace(/\s+/g, ' ')}\n  paramètres : ${JSON.stringify(params)}`);
+        throw e;
+      }
       const rows = r.rows || [];
       if (insert) return { rows, rowCount: r.rowCount ?? rows.length, lastInsertRowid: rows[0]?.id ?? null };
       return { rows, rowCount: r.rowCount ?? rows.length };
@@ -329,8 +350,8 @@ async function createPgliteAdapter() {
 /* Assemblage : une seule façade `db`                                   */
 /* ------------------------------------------------------------------ */
 const adapter = await (async () => {
-  if (DRIVER === 'postgres') return createPgPoolAdapter();
-  if (DRIVER === 'pglite') return createPgliteAdapter();
+  if (DRIVER === 'postgres') return await createPgPoolAdapter();
+  if (DRIVER === 'pglite') return await createPgliteAdapter();
   if (DRIVER === 'sqlite') return await createSqliteAdapter();
   throw new Error(`DB_DRIVER inconnu : ${DRIVER} (attendu : sqlite, postgres ou pglite)`);
 })();
@@ -342,10 +363,13 @@ const db = {
   /** Requête paramétrée ; les transactions en cours sont respectées automatiquement. */
   prepare(sql) {
     return {
-      get: (...params) => run(sql, params, 'get').then((r) => r.rows[0]),
-      all: (...params) => run(sql, params, 'all').then((r) => r.rows),
+      get: async (...params) => (await run(sql, params, 'get')).rows[0],
+      all: async (...params) => (await run(sql, params, 'all')).rows,
       /* `changes` reprend le vocabulaire de better-sqlite3 : le code de l'application l'utilise. */
-      run: (...params) => run(sql, params, 'run').then((r) => ({ ...r, changes: r.rowCount ?? 0 })),
+      run: async (...params) => {
+        const r = await run(sql, params, 'run');
+        return { ...r, changes: r.rowCount ?? 0 };
+      },
     };
   },
   /** Exécution directe d'un script (DDL, plusieurs instructions séparées par « ; »). */

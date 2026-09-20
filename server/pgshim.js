@@ -99,7 +99,8 @@ export function toPostgres(sql) {
           libres (SQLite appliquait la collation NOCASE de la colonne, PostgreSQL est sensible). */
   text = replaceOutside(text, /\bLIKE\b/g, () => 'ILIKE');
   text = text.replace(/\s+COLLATE\s+NOCASE/gi, '');
-  text = text.replace(/(\bemail\b)(\s*=\s*)(\$\d+|'[^']*'|\?)/gi,
+  /* la colonne peut être qualifiée (u.email) : le préfixe doit rester DANS lower(...) */
+  text = text.replace(/((?:(?:[A-Za-z_]\w*)\.)?\bemail\b)(\s*=\s*)(\$\d+|'[^']*'|\?)/gi,
     (_m, colonne, egal, valeur) => `lower(${colonne})${egal}lower(${valeur})`);
 
   /* 5. INSERT OR IGNORE → INSERT … ON CONFLICT DO NOTHING */
@@ -120,6 +121,13 @@ export function toPostgres(sql) {
     }
     text = out;
   }
+
+  /* 6-bis. `$n IS NULL` : PostgreSQL ne sait pas déduire le type d'un paramètre employé
+     SEUL dans cette position (« could not determine data type of parameter $3 »), là où
+     SQLite s'en moque. Un transtypage en texte rend la comparaison valide sans changer
+     le résultat : la valeur est nulle, ou elle ne l'est pas. */
+  text = text.replace(/(\$\d+)\s+IS\s+(NOT\s+)?NULL/gi,
+    (_m, marqueur, negation) => `${marqueur}::text IS ${negation || ''}NULL`);
 
   /* 7. date(…, offset) avec paramètre lié : datetime('now', $3) → now() + ($3)::interval */
   text = text.replace(/datetime\(\s*'now'\s*,\s*\$(\d+)\s*\)/gi, (_m, n) => `now() + ($${n})::interval`);
@@ -143,6 +151,7 @@ export function ddlToPostgres(ddl) {
   t = t.replace(/INTEGER\s+PRIMARY\s+KEY/gi, 'bigint PRIMARY KEY');
   t = t.replace(/TEXT\s+DEFAULT\s*\(\s*now\(\)\s*\)/gi, 'timestamptz DEFAULT now()');
   t = t.replace(/\bREAL\b/gi, 'double precision');
+  t = t.replace(/\bBLOB\b/gi, 'bytea');          /* contenu binaire des fichiers importés */
   t = t.replace(/TEXT\s+NOT\s+NULL\s+DEFAULT\s*\(\s*now\(\)\s*\)/gi, 'timestamptz NOT NULL DEFAULT now()');
   /* les horodatages déclarés en TEXT passent en timestamptz quand la valeur par défaut est now() */
   t = t.replace(/(\b(created_at|updated_at|published_at|reset_expires)\b\s+)TEXT(\s+DEFAULT\s+now\(\))?/gi,

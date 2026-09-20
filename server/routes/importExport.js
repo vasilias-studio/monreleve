@@ -8,47 +8,43 @@
  *  3) POST /commit  → réécrit uniquement après confirmation explicite (« confirm:true »), jamais en écrasant
  *                     des données existantes sans accord (conflits signalés dans l'aperçu).
  */
-import { Router } from 'express';
-import fs from 'node:fs';
-import path from 'node:path';
+import { asyncRouter } from '../asyncrouter.js';
 import multer from 'multer';
-import crypto from 'node:crypto';
-import db, { DATA_DIR, tx } from '../db.js';
+import db, { tx } from '../db.js';
 import { authRequired, requireRole, badRequest, notFound, ApiError } from '../auth.js';
 import { loadSheetCells, loadSheetValues, parseReleveStructure, parseFlatGrades, suggestMapping, readWorkbook, XLSX } from '../releveParser.js';
+import { saveUpload, readUpload, dropUpload } from '../uploads.js';
 import { computeReleve } from '../compute.js';
 import { loadTemplateTree } from './student.js';
 import { findTemplateForStudent } from '../routes/student.js';
 
-const r = Router();
+const r = asyncRouter();
 r.use(authRequired, requireRole('admin'));
 
-const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
+/* Fichier gardé en mémoire puis rangé dans la base (server/uploads.js) : aucun disque. */
 const upload = multer({
-  storage: multer.diskStorage({
-    destination: UPLOAD_DIR,
-    filename: (_req, file, cb) => cb(null, `${Date.now()}-${crypto.randomBytes(6).toString('hex')}${path.extname(file.originalname).toLowerCase()}`),
-  }),
-  limits: { fileSize: 8 * 1024 * 1024 },
+  storage: multer.memoryStorage(),
+  limits: { fileSize: Number(process.env.UPLOAD_MAX_MB || 12) * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const ok = /\.(xlsx|xls)$/i.test(file.originalname);
     cb(ok ? null : badRequest('Format attendu : .xlsx ou .xls'), ok);
   },
 });
 
-const safePath = (fileId) => {
-  const p = path.join(UPLOAD_DIR, String(fileId).replace(/[^\w.\-]/g, ''));
-  if (!p.startsWith(UPLOAD_DIR) || !fs.existsSync(p)) throw notFound('Fichier import introuvable (ré-uploadez-le)');
-  return p;
+/** Retrouve un classeur envoyé (contenu stocké en base) — voir server/uploads.js. */
+const safeFile = async (fileId) => {
+  const fichier = await readUpload(fileId);
+  if (!fichier) throw notFound('Fichier import introuvable (ré-uploadez-le)');
+  return fichier;
 };
 
 /* ------------------------------------------------------------------ */
 /* Import                                                               */
 /* ------------------------------------------------------------------ */
-r.post('/import/upload', upload.single('file'), (req, res, next) => {
+r.post('/import/upload', upload.single('file'), async (req, res, next) => {
   try {
     if (!req.file) throw badRequest('Aucun fichier reçu');
-    const p = path.join(UPLOAD_DIR, req.file.filename);
+    const p = req.file.buffer;                     /* contenu en mémoire */
     const wb = readWorkbook(p, { cellFormula: true });
     const sheets = wb.SheetNames.map((name) => {
       const ws = wb.Sheets[name];
@@ -56,8 +52,9 @@ r.post('/import/upload', upload.single('file'), (req, res, next) => {
       const preview = aoa.slice(0, 12);
       return { name, rows: aoa.length, preview };
     });
+    const fileId = await saveUpload(req.file.originalname, req.file.buffer);
     res.json({
-      fileId: req.file.filename,
+      fileId,
       filename: req.file.originalname,
       sheets,
       suggestions: sheets.map((s) => {
@@ -78,10 +75,10 @@ function looksFlat(aoa) {
 const normName = (s) => String(s ?? '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ');
 
 /** POST /analyze — renvoie l'aperçu complet du résultat de l'import (aucune écriture). */
-r.post('/import/analyze', (req, res, next) => {
+r.post('/import/analyze', async (req, res, next) => {
   try {
     const { fileId, sheet, mode = 'structure', mapping, targetTemplateId, source = 'official' } = req.body || {};
-    const p = safePath(fileId);
+    const p = (await safeFile(fileId)).content;
 
     if (mode === 'structure') {
       const { rows } = loadSheetCells(p, sheet);
@@ -90,41 +87,41 @@ r.post('/import/analyze', (req, res, next) => {
       // Conflits : le modèle cible contient-il déjà une structure ?
       let conflicts = null;
       if (targetTemplateId) {
-        const existing = db.prepare('SELECT COUNT(*) n FROM semesters WHERE template_id=?').get(Number(targetTemplateId)).n;
+        const existing = (await db.prepare('SELECT COUNT(*) n FROM semesters WHERE template_id=?').get(Number(targetTemplateId))).n;
         if (existing > 0) conflicts = { replace_structure: existing, message: 'Le modèle cible contient déjà une structure : l’import la remplacera (notes conservées si les matières correspondent).' };
       }
       return res.json({
         mode, parsed, conflicts,
-        target: targetTemplateId ? db.prepare('SELECT id, name FROM templates WHERE id=?').get(Number(targetTemplateId)) : null,
+        target: targetTemplateId ? await db.prepare('SELECT id, name FROM templates WHERE id=?').get(Number(targetTemplateId)) : null,
         summary: `${parsed.semesters.length} semestre(s), ${parsed.semesters.reduce((a, s) => a + s.units.length, 0)} UE, ${parsed.semesters.reduce((a, s) => a + s.units.reduce((x, u) => x + u.courses.length, 0), 0)} matière(s) détectés`,
       });
     }
 
     if (mode === 'grades') {
       if (!targetTemplateId) throw badRequest('Choisissez le modèle de relevé cible');
-      const template = db.prepare('SELECT * FROM templates WHERE id=?').get(Number(targetTemplateId));
+      const template = await db.prepare('SELECT * FROM templates WHERE id=?').get(Number(targetTemplateId));
       if (!template) throw notFound('Modèle introuvable');
-      const tree = loadTemplateTree(template.id);
+      const tree = await loadTemplateTree(template.id);
       // index matières : nom normalisé -> {course, semester, unit}
       const courseIndex = new Map();
       for (const s of tree) for (const u of s.units) for (const c of u.courses) courseIndex.set(normName(c.name), { course: c, semester: s, unit: u });
 
       const { aoa } = loadSheetValues(p, sheet);
       const flat = parseFlatGrades(aoa, mapping || {});
-      const studentsByMatricule = new Map(db.prepare('SELECT s.id, s.matricule, u.first_name, u.last_name FROM students s JOIN users u ON u.id=s.user_id').all().map((s) => [normName(s.matricule), s]));
-      const items = flat.rows.map((row) => {
+      const studentsByMatricule = new Map((await db.prepare('SELECT s.id, s.matricule, u.first_name, u.last_name FROM students s JOIN users u ON u.id=s.user_id').all()).map((s) => [normName(s.matricule), s]));
+      const items = (await Promise.all(flat.rows.map(async (row) => {
         const match = courseIndex.get(normName(row.subject));
         const student = row.matricule ? studentsByMatricule.get(normName(row.matricule)) : null;
         let existing = null, conflict = null;
         if (match && student) {
-          existing = db.prepare('SELECT normal, rattrapage FROM grades WHERE student_id=? AND course_id=? AND source=?')
+          existing = await db.prepare('SELECT normal, rattrapage FROM grades WHERE student_id=? AND course_id=? AND source=?')
             .get(student.id, match.course.id, source);
           if (existing && (existing.normal != null || existing.rattrapage != null) && (row.normal != null || row.rattrapage != null)) {
             conflict = 'overwrite';
           }
         }
         return { ...row, matched: !!match, student: student ? `${student.first_name} ${student.last_name}` : null, student_id: student?.id ?? null, course_id: match?.course.id ?? null, conflict };
-      });
+      })));
       const conflictsCount = items.filter((i) => i.conflict).length;
       res.json({
         mode, headerRow: flat.headerRow, items: items.slice(0, 200), total: items.length,
@@ -139,51 +136,51 @@ r.post('/import/analyze', (req, res, next) => {
 });
 
 /** POST /commit — écrit réellement, seulement avec confirm === true. */
-r.post('/import/commit', (req, res, next) => {
+r.post('/import/commit', async (req, res, next) => {
   try {
     const { fileId, sheet, mode = 'structure', mapping, targetTemplateId, onConflict = 'skip', source = 'official', confirm } = req.body || {};
     if (confirm !== true) throw badRequest('Confirmation requise pour écrire dans la base');
-    const p = safePath(fileId);
+    const p = (await safeFile(fileId)).content;
     let summary = '';
 
     if (mode === 'structure') {
       let templateId = Number(targetTemplateId) || null;
       if (!templateId) throw badRequest('Choisissez le modèle cible (ou créez-le d’abord dans « Modèles »)');
-      const nSem = db.prepare('SELECT COUNT(*) n FROM semesters WHERE template_id=?').get(templateId).n;
+      const nSem = (await db.prepare('SELECT COUNT(*) n FROM semesters WHERE template_id=?').get(templateId)).n;
       if (nSem > 0 && onConflict !== 'overwrite') throw new ApiError(409, 'Le modèle contient déjà une structure : relancez avec « écraser » confirmé.');
       const { rows } = loadSheetCells(p, sheet);
       const parsed = parseReleveStructure(rows);
       if (!parsed.ok) throw badRequest(parsed.error);
 
-      tx(() => {
-        if (nSem > 0) db.prepare('DELETE FROM semesters WHERE template_id=?').run(templateId); // cascade UE/cours/publications ; notes conservées (course_id orphelins supprimés par cascade)
+      await tx(async () => {
+        if (nSem > 0) await db.prepare('DELETE FROM semesters WHERE template_id=?').run(templateId); // cascade UE/cours/publications ; notes conservées (course_id orphelins supprimés par cascade)
         let sOrd = 0;
         for (const s of parsed.semesters) {
-          const si = db.prepare('INSERT INTO semesters (template_id, number, name, ects_expected, ord) VALUES (?,?,?,?,?)')
-            .run(templateId, s.number, s.name || `Semestre ${s.number}`, s.ects || 30, sOrd++).lastInsertRowid;
+          const si = (await db.prepare('INSERT INTO semesters (template_id, number, name, ects_expected, ord) VALUES (?,?,?,?,?)')
+            .run(templateId, s.number, s.name || `Semestre ${s.number}`, s.ects || 30, sOrd++)).lastInsertRowid;
           let uOrd = 0;
           for (const u of s.units) {
-            const ui = db.prepare('INSERT INTO units (semester_id, code, name, ord) VALUES (?,?,?,?)').run(si, u.code, u.name, uOrd++).lastInsertRowid;
+            const ui = (await db.prepare('INSERT INTO units (semester_id, code, name, ord) VALUES (?,?,?,?)').run(si, u.code, u.name, uOrd++)).lastInsertRowid;
             let cOrd = 0;
             for (const c of u.courses) {
-              db.prepare('INSERT INTO courses (unit_id, name, coefficient, credits, ord) VALUES (?,?,?,?,?)').run(ui, c.name, c.coefficient ?? 1, c.credits ?? 1, cOrd++);
+              await db.prepare('INSERT INTO courses (unit_id, name, coefficient, credits, ord) VALUES (?,?,?,?,?)').run(ui, c.name, c.coefficient ?? 1, c.credits ?? 1, cOrd++);
             }
           }
         }
-        db.prepare('UPDATE templates SET updated_at=datetime(\'now\') WHERE id=?').run(templateId);
+        await db.prepare('UPDATE templates SET updated_at=datetime(\'now\') WHERE id=?').run(templateId);
       });
       summary = `Structure importée dans le modèle #${templateId} : ${parsed.semesters.length} semestre(s)`;
     } else if (mode === 'grades') {
-      const template = db.prepare('SELECT * FROM templates WHERE id=?').get(Number(targetTemplateId));
+      const template = await db.prepare('SELECT * FROM templates WHERE id=?').get(Number(targetTemplateId));
       if (!template) throw notFound('Modèle introuvable');
-      const tree = loadTemplateTree(template.id);
+      const tree = await loadTemplateTree(template.id);
       const courseIndex = new Map();
       for (const s of tree) for (const u of s.units) for (const c of u.courses) courseIndex.set(normName(c.name), { course: c, semester: s });
-      const studentsByMatricule = new Map(db.prepare('SELECT id, matricule FROM students').all().map((s) => [normName(s.matricule), s]));
+      const studentsByMatricule = new Map((await db.prepare('SELECT id, matricule FROM students').all()).map((s) => [normName(s.matricule), s]));
       const { aoa } = loadSheetValues(p, sheet);
       const flat = parseFlatGrades(aoa, mapping || {});
       let written = 0, skipped = 0, unmatched = 0, createdCourses = 0;
-      tx(() => {
+      await tx(async () => {
         for (const row of flat.rows) {
           let match = courseIndex.get(normName(row.subject));
           const student = row.matricule ? studentsByMatricule.get(normName(row.matricule)) : null;
@@ -193,37 +190,38 @@ r.post('/import/commit', (req, res, next) => {
             if (!req.body?.createMissingCourses) { unmatched++; continue; }
             const firstSem = tree[0]; const firstUe = firstSem?.units[0];
             if (!firstUe) { unmatched++; continue; }
-            const cid = db.prepare('INSERT INTO courses (unit_id, name, coefficient, credits, ord) VALUES (?,?,?,?,?)')
-              .run(firstUe.id, row.subject, row.coefficient ?? 1, row.credits ?? 1, 999).lastInsertRowid;
+            const cid = (await db.prepare('INSERT INTO courses (unit_id, name, coefficient, credits, ord) VALUES (?,?,?,?,?)')
+              .run(firstUe.id, row.subject, row.coefficient ?? 1, row.credits ?? 1, 999)).lastInsertRowid;
             match = { course: { id: cid }, semester: firstSem };
             courseIndex.set(normName(row.subject), match);
             createdCourses++;
           }
-          const pub = db.prepare('SELECT status FROM publications WHERE semester_id=?').get(match.semester.id);
+          const pub = await db.prepare('SELECT status FROM publications WHERE semester_id=?').get(match.semester.id);
           if (pub?.status === 'locked') { skipped++; continue; }
-          const existing = db.prepare('SELECT normal, rattrapage FROM grades WHERE student_id=? AND course_id=? AND source=?')
+          const existing = await db.prepare('SELECT normal, rattrapage FROM grades WHERE student_id=? AND course_id=? AND source=?')
             .get(student.id, match.course.id, source);
           if (existing && (existing.normal != null || existing.rattrapage != null) && onConflict !== 'overwrite') { skipped++; continue; }
-          db.prepare(`INSERT INTO grades (student_id, course_id, source, normal, rattrapage, updated_at)
+          await db.prepare(`INSERT INTO grades (student_id, course_id, source, normal, rattrapage, updated_at)
             VALUES (?,?,?,?, ?, datetime('now'))
             ON CONFLICT(student_id, course_id, source)
             DO UPDATE SET normal=excluded.normal, rattrapage=excluded.rattrapage, updated_at=datetime('now')`)
             .run(student.id, match.course.id, source, row.normal, row.rattrapage);
           written++;
         }
-        db.prepare('INSERT INTO imports (user_id, filename, mode, summary, rows_affected) VALUES (?,?,?,?,?)')
+        await db.prepare('INSERT INTO imports (user_id, filename, mode, summary, rows_affected) VALUES (?,?,?,?,?)')
           .run(req.user.id, String(fileId), 'grades', `Import ${source} : ${written} écritures, ${skipped} ignorées, ${unmatched} sans correspondance, ${createdCourses} matières créées`, written);
       });
       summary = `${written} note(s) importée(s) (${source}) · ${skipped} ignorée(s) · ${unmatched} sans correspondance · ${createdCourses} matière(s) créée(s)`;
     } else throw badRequest('Mode inconnu');
 
+    await dropUpload(fileId);                     /* import terminé : le classeur n'a plus à rester stocké */
     res.json({ ok: true, summary });
   } catch (e) { next(e); }
 });
 
 /* Journal des imports */
-r.get('/import/journal', (_req, res) => {
-  res.json(db.prepare(`SELECT i.*, u.email AS by_email FROM imports i LEFT JOIN users u ON u.id=i.user_id ORDER BY i.id DESC LIMIT 50`).all());
+r.get('/import/journal', async (_req, res) => {
+  res.json(await db.prepare(`SELECT i.*, u.email AS by_email FROM imports i LEFT JOIN users u ON u.id=i.user_id ORDER BY i.id DESC LIMIT 50`).all());
 });
 
 /* ------------------------------------------------------------------ */
@@ -239,19 +237,19 @@ const sendCsv = (res, name, content) => {
   res.send('\uFEFF' + content);
 };
 
-r.get('/export/students.csv', (_req, res) => {
-  const rows = db.prepare(`SELECT s.matricule, u.last_name, u.first_name, u.email, p.name AS program, l.name AS level, c.name AS class, y.label AS year
+r.get('/export/students.csv', async (_req, res) => {
+  const rows = await db.prepare(`SELECT s.matricule, u.last_name, u.first_name, u.email, p.name AS program, l.name AS level, c.name AS class, y.label AS year
     FROM students s JOIN users u ON u.id=s.user_id LEFT JOIN programs p ON p.id=s.program_id
     LEFT JOIN levels l ON l.id=s.level_id LEFT JOIN classes c ON c.id=s.class_id
     LEFT JOIN academic_years y ON y.id=s.academic_year_id ORDER BY u.last_name`).all();
   sendCsv(res, 'etudiants.csv', csv(rows, ['matricule', 'last_name', 'first_name', 'email', 'program', 'level', 'class', 'year']));
 });
 
-r.get('/export/template/:id.csv', (req, res, next) => {
+r.get('/export/template/:id.csv', async (req, res, next) => {
   try {
-    const t = db.prepare('SELECT * FROM templates WHERE id=?').get(req.params.id);
+    const t = await db.prepare('SELECT * FROM templates WHERE id=?').get(req.params.id);
     if (!t) throw notFound('Modèle introuvable');
-    const tree = loadTemplateTree(t.id);
+    const tree = await loadTemplateTree(t.id);
     const rows = [];
     for (const s of tree) for (const u of s.units) for (const c of u.courses) rows.push({ semestre: s.name, ue: u.code, matiere: c.name, coefficient: c.coefficient, credits: c.credits });
     sendCsv(res, `modele-${t.id}.csv`, csv(rows, ['semestre', 'ue', 'matiere', 'coefficient', 'credits']));
@@ -259,19 +257,19 @@ r.get('/export/template/:id.csv', (req, res, next) => {
 });
 
 /** Relevé complet d'un étudiant → .xlsx (source personnelle ou officielle). */
-r.get('/export/releve/:studentId.xlsx', (req, res, next) => {
+r.get('/export/releve/:studentId.xlsx', async (req, res, next) => {
   try {
-    const s = db.prepare('SELECT * FROM students WHERE id=?').get(req.params.studentId);
+    const s = await db.prepare('SELECT * FROM students WHERE id=?').get(req.params.studentId);
     if (!s) throw notFound('Étudiant introuvable');
-    const template = findTemplateForStudent(s);
+    const template = await findTemplateForStudent(s);
     if (!template) throw badRequest('Aucun modèle pour cet étudiant');
     const source = req.query.source === 'personal' ? 'personal' : 'official';
-    const tree = loadTemplateTree(template.id);
+    const tree = await loadTemplateTree(template.id);
     const ids = tree.flatMap((x) => x.units.flatMap((u) => u.courses.map((c) => c.id)));
     const m = new Map();
     if (ids.length) {
       const marks = ids.map(() => '?').join(',');
-      for (const row of db.prepare(`SELECT course_id, normal, rattrapage FROM grades WHERE student_id=? AND source=? AND course_id IN (${marks})`).all(s.id, source, ...ids)) m.set(row.course_id, row);
+      for (const row of await db.prepare(`SELECT course_id, normal, rattrapage FROM grades WHERE student_id=? AND source=? AND course_id IN (${marks})`).all(s.id, source, ...ids)) m.set(row.course_id, row);
     }
     const computed = computeReleve(template, tree, m);
     const aoa = [

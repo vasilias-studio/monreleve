@@ -1,16 +1,14 @@
 /**
  * site.js — Interface web 100 % HTML (rendu serveur, zéro JavaScript applicatif).
- * Toutes les données viennent de SQLite ; toutes les autorisations sont vérifiées ici,
+ * Toutes les données viennent de la base (SQLite en local, PostgreSQL/Supabase en ligne) ;
+ * toutes les autorisations sont vérifiées ici,
  * côté serveur (un étudiant ne voit/jamais écrit que ses propres lignes, un admin a tout).
  * L'API REST JSON (/api/*) reste en place (mobile/PWA) et partage la même base.
  */
-import { Router } from 'express';
 import express from 'express';
-import fs from 'node:fs';
-import path from 'node:path';
+import { asyncRouter } from '../asyncrouter.js';
 import multer from 'multer';
-import crypto from 'node:crypto';
-import db, { DATA_DIR, tx } from '../db.js';
+import db, { tx } from '../db.js';
 import { signToken, readToken, hashPassword, verifyPassword, newResetToken, ApiError, badRequest, notFound } from '../auth.js';
 import { computeReleve, resolveRules } from '../compute.js';
 import { findTemplateForStudent, loadTemplateTree } from '../routes/student.js';
@@ -19,6 +17,7 @@ import { page, esc, fmt, url, hiddenT, chip, statusChip, pubChip } from './layou
 import { liveCalcScript } from './engine.js';
 import { buildRelevePdf } from '../pdfReleve.js';
 import { feed, likedIds, toggleLike, audienceLabel, relTime, initialsOf } from '../annonces.js';
+import { saveUpload, readUpload, dropUpload, TAILLE_MAX } from '../uploads.js';
 
 /* ---- calcul en direct (aperçu Excel) : config sérialisée pour le moteur inliné ---- */
 const liveTree = (semesters) => semesters.map((s) => ({
@@ -31,15 +30,19 @@ const liveScores = (computed) => {
   return m;
 };
 
-const r = Router();
+const r = asyncRouter();
 r.use(express.urlencoded({ extended: true }));
 
-const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
-fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+/* Le classeur importé est gardé EN MÉMOIRE le temps de la requête puis rangé dans la
+ * base (voir server/uploads.js) : aucun disque requis, donc c'est compatible avec un
+ * hébergement sans serveur (Vercel) comme avec un serveur classique. */
 const upload = multer({
-  storage: multer.diskStorage({ destination: UPLOAD_DIR, filename: (_q, f, cb) => cb(null, `${Date.now()}-${crypto.randomBytes(6).toString('hex')}${path.extname(f.originalname).toLowerCase()}`) }),
-  limits: { fileSize: 8 * 1024 * 1024 },
-  fileFilter: (_q, f, cb) => { const ok = /\.(xlsx|xls)$/i.test(f.originalname); cb(ok ? null : new ApiError(400, 'Format attendu : .xlsx ou .xls'), ok); },
+  storage: multer.memoryStorage(),
+  limits: { fileSize: TAILLE_MAX },            /* UPLOAD_MAX_MB, 12 Mo par défaut */
+  fileFilter: (_q, f, cb) => {
+    const ok = /\.(xlsx|xls)$/i.test(f.originalname);
+    cb(ok ? null : new ApiError(400, 'Format attendu : .xlsx ou .xls'), ok);
+  },
 });
 
 /* ------------------------------------------------------------------ */
@@ -62,10 +65,10 @@ const H = (fn) => async (req, res, next) => {
 };
 
 /* Courant : utilisateur + jeton + thème + messages flash */
-r.use((req, res, next) => {
+r.use(async (req, res, next) => {
   const q = req.query;
   const token = q.t ? String(q.t) : getCookie(req, 'mrt');
-  const user = readToken(token);
+  const user = await readToken(token);
   /* le choix de thème est persisté en cookie : les liens sans ?th= le conservent */
   if (q.th === 'dark' || q.th === 'light') res.setHeader('Set-Cookie', `mrt_theme=${q.th}; Path=/; Max-Age=31536000; SameSite=Lax`);
   else if (q.th === 'auto') res.setHeader('Set-Cookie', 'mrt_theme=; Path=/; Max-Age=0; SameSite=Lax');
@@ -79,36 +82,36 @@ const need = (role) => (req, res, next) => {
   if (role && req.user.role !== role) { res.redirect(req.user.role === 'admin' ? url('/admin', req.ctx) : url('/accueil', req.ctx)); return; }
   next();
 };
-const student = (req) => db.prepare('SELECT * FROM students WHERE user_id=?').get(req.user.id);
+const student = async (req) => await db.prepare('SELECT * FROM students WHERE user_id=?').get(req.user.id);
 
 /** Calcule relevé perso + officiel pour un étudiant (données de toutes les pages étudiant). */
-function studentData(stud) {
-  const template = findTemplateForStudent(stud);
+async function studentData(stud) {
+  const template = await findTemplateForStudent(stud);
   if (!template) return { template: null };
-  const semesters = loadTemplateTree(template.id);
-  const loadGrades = (source) => {
+  const semesters = await loadTemplateTree(template.id);
+  const loadGrades = async (source) => {
     const ids = semesters.flatMap((s) => s.units.flatMap((u) => u.courses.map((c) => c.id)));
     const map = new Map();
     if (ids.length) {
       const marks = ids.map(() => '?').join(',');
-      for (const row of db.prepare(`SELECT course_id, normal, rattrapage FROM grades WHERE student_id=? AND source=? AND course_id IN (${marks})`).all(stud.id, source, ...ids)) map.set(row.course_id, row);
+      for (const row of await db.prepare(`SELECT course_id, normal, rattrapage FROM grades WHERE student_id=? AND source=? AND course_id IN (${marks})`).all(stud.id, source, ...ids)) map.set(row.course_id, row);
     }
     return map;
   };
-  const personal = computeReleve(template, semesters, loadGrades('personal'));
-  const official = computeReleve(template, semesters, loadGrades('official'));
+  const personal = computeReleve(template, semesters, await loadGrades('personal'));
+  const official = computeReleve(template, semesters, await loadGrades('official'));
   const pubs = {};
-  for (const s of semesters) pubs[s.id] = db.prepare('SELECT status, published_at FROM publications WHERE semester_id=?').get(s.id) || { status: 'draft' };
+  for (const s of semesters) pubs[s.id] = await db.prepare('SELECT status, published_at FROM publications WHERE semester_id=?').get(s.id) || { status: 'draft' };
   const officialVisible = official.semesters.filter((s) => pubs[s.id]?.status !== 'draft');
   return { template, semesters, personal, official, officialVisible, pubs };
 }
 
-const opts = () => ({
-  programs: db.prepare('SELECT id, name FROM programs WHERE active=1 ORDER BY name').all(),
-  levels: db.prepare('SELECT id, name FROM levels ORDER BY ord, name').all(),
-  years: db.prepare('SELECT id, label FROM academic_years ORDER BY start_year DESC').all(),
-  classes: db.prepare(`SELECT c.id, c.name, p.name AS p, l.name AS l FROM classes c JOIN programs p ON p.id=c.program_id JOIN levels l ON l.id=c.level_id ORDER BY c.name`).all(),
-  templates: db.prepare('SELECT t.id, t.name FROM templates t ORDER BY t.id DESC').all(),
+const opts = async () => ({
+  programs: await db.prepare('SELECT id, name FROM programs WHERE active=1 ORDER BY name').all(),
+  levels: await db.prepare('SELECT id, name FROM levels ORDER BY ord, name').all(),
+  years: await db.prepare('SELECT id, label FROM academic_years ORDER BY start_year DESC').all(),
+  classes: await db.prepare(`SELECT c.id, c.name, p.name AS p, l.name AS l FROM classes c JOIN programs p ON p.id=c.program_id JOIN levels l ON l.id=c.level_id ORDER BY c.name`).all(),
+  templates: await db.prepare('SELECT t.id, t.name FROM templates t ORDER BY t.id DESC').all(),
 });
 const select = (name, rows, sel, extra = '') => `<select name="${name}" class="input" ${extra}>${rows.map((o) => `<option value="${o.id}" ${String(sel) === String(o.id) ? 'selected' : ''}>${esc(o.name ?? o.label ?? o.p + ' · ' + o.l)}</option>`).join('')}</select>`;
 
@@ -118,15 +121,15 @@ const csv = (rows, headers) => {
   return [headers.join(';'), ...rows.map((row) => headers.map((h) => escv(typeof h === 'function' ? h(row) : row[h])).join(';'))].join('\n');
 };
 const sendCsv = (res, name, content) => { res.setHeader('Content-Type', 'text/csv; charset=utf-8'); res.setHeader('Content-Disposition', `attachment; filename="${name}"`); res.send('\uFEFF' + content); };
-function sendReleveXlsx(res, stud, source) {
-  const template = findTemplateForStudent(stud);
+async function sendReleveXlsx(res, stud, source) {
+  const template = await findTemplateForStudent(stud);
   if (!template) throw badRequest('Aucun modèle pour cet étudiant');
-  const tree = loadTemplateTree(template.id);
+  const tree = await loadTemplateTree(template.id);
   const ids = tree.flatMap((x) => x.units.flatMap((u) => u.courses.map((c) => c.id)));
   const m = new Map();
-  if (ids.length) { const marks = ids.map(() => '?').join(','); for (const row of db.prepare(`SELECT course_id, normal, rattrapage FROM grades WHERE student_id=? AND source=? AND course_id IN (${marks})`).all(stud.id, source, ...ids)) m.set(row.course_id, row); }
+  if (ids.length) { const marks = ids.map(() => '?').join(','); for (const row of await db.prepare(`SELECT course_id, normal, rattrapage FROM grades WHERE student_id=? AND source=? AND course_id IN (${marks})`).all(stud.id, source, ...ids)) m.set(row.course_id, row); }
   const computed = computeReleve(template, tree, m);
-  const u = db.prepare('SELECT first_name,last_name FROM users WHERE id=?').get(stud.user_id);
+  const u = await db.prepare('SELECT first_name,last_name FROM users WHERE id=?').get(stud.user_id);
   const aoa = [
     [`Relevé de notes (${source === 'official' ? 'Résultats officiels' : 'Notes personnelles'}) — MonRelevé`],
     ['Étudiant', `${u.first_name} ${u.last_name}`.trim(), 'Matricule', stud.matricule],
@@ -175,9 +178,9 @@ r.get('/login', H((req, res) => {
   res.send(authShell(req, 'Connexion', body));
 }));
 
-r.post('/login', H((req, res) => {
+r.post('/login', H(async (req, res) => {
   const email = String(req.body.email || '').trim().toLowerCase();
-  const user = db.prepare('SELECT * FROM users WHERE email=?').get(email);
+  const user = await db.prepare('SELECT * FROM users WHERE email=?').get(email);
   if (!user || !verifyPassword(String(req.body.password || ''), user.password_hash)) {
     return res.redirect('/login?err=' + encodeURIComponent('Identifiants incorrects.'));
   }
@@ -189,8 +192,8 @@ r.post('/login', H((req, res) => {
 
 r.get('/deconnexion', H((req, res) => { res.clearCookie('mrt'); res.redirect(url('/login', { th: req.ctx.th })); }));
 
-r.get('/register', H((req, res) => {
-  const o = opts();
+r.get('/register', H(async (req, res) => {
+  const o = await opts();
   const body = `<div class="auth-wrap">
     <div class="auth-hero"><div class="logo-dot" style="width:58px;height:58px;border-radius:19px;font-size:24px">＋</div>
       <h1>Créer mon compte</h1><p class="muted small" style="margin:4px 0 0">Étudiants uniquement — vos notes resteront privées.</p></div>
@@ -214,20 +217,20 @@ r.get('/register', H((req, res) => {
   res.send(authShell(req, 'Inscription', body));
 }));
 
-r.post('/register', H((req, res) => {
+r.post('/register', H(async (req, res) => {
   const b = req.body;
   const fail = (m) => res.redirect(url('/register', { ...req.ctx, err: m }));
   for (const f of ['first_name', 'last_name', 'email', 'password', 'matricule']) if (!String(b[f] || '').trim()) return fail(`Champ manquant : ${f === 'first_name' ? 'prénom' : f === 'last_name' ? 'nom' : f}`);
   if (!emailRe.test(b.email)) return fail('Adresse e-mail invalide');
   if (String(b.password).length < 6) return fail('Mot de passe : 6 caractères minimum');
-  if (db.prepare('SELECT id FROM users WHERE email=?').get(b.email.trim().toLowerCase())) return fail('Un compte existe déjà avec cet e-mail — connectez-vous.');
-  if (db.prepare('SELECT id FROM students WHERE matricule=?').get(String(b.matricule).trim())) return fail('Ce matricule est déjà utilisé.');
-  const ui = db.prepare('INSERT INTO users (email,password_hash,role,last_name,first_name) VALUES (?,?,?,?,?)')
+  if (await db.prepare('SELECT id FROM users WHERE email=?').get(b.email.trim().toLowerCase())) return fail('Un compte existe déjà avec cet e-mail — connectez-vous.');
+  if (await db.prepare('SELECT id FROM students WHERE matricule=?').get(String(b.matricule).trim())) return fail('Ce matricule est déjà utilisé.');
+  const ui = await db.prepare('INSERT INTO users (email,password_hash,role,last_name,first_name) VALUES (?,?,?,?,?)')
     .run(b.email.trim().toLowerCase(), hashPassword(b.password), 'student', b.last_name.trim(), b.first_name.trim());
-  let yearId = asNum(b.academic_year_id); if (!yearId) yearId = db.prepare('SELECT id FROM academic_years WHERE is_current=1').get()?.id ?? null;
-  db.prepare('INSERT INTO students (user_id,matricule,program_id,level_id,academic_year_id) VALUES (?,?,?,?,?)')
+  let yearId = asNum(b.academic_year_id); if (!yearId) yearId = (await db.prepare('SELECT id FROM academic_years WHERE is_current=1').get())?.id ?? null;
+  await db.prepare('INSERT INTO students (user_id,matricule,program_id,level_id,academic_year_id) VALUES (?,?,?,?,?)')
     .run(ui.lastInsertRowid, String(b.matricule).trim(), asNum(b.program_id), asNum(b.level_id), yearId);
-  const t = signToken(db.prepare('SELECT * FROM users WHERE id=?').get(ui.lastInsertRowid));
+  const t = signToken(await db.prepare('SELECT * FROM users WHERE id=?').get(ui.lastInsertRowid));
   res.cookie('mrt', t, { httpOnly: true, sameSite: 'lax', maxAge: 30 * 864e5 });
   res.redirect(url('/accueil', { t, th: req.ctx.th }));
 }));
@@ -242,11 +245,11 @@ r.get('/forgot', H((req, res) => {
     </form></div>`;
   res.send(authShell(req, 'Mot de passe oublié', body));
 }));
-r.post('/forgot', H((req, res) => {
-  const user = db.prepare('SELECT * FROM users WHERE email=?').get(String(req.body.email || '').trim().toLowerCase());
+r.post('/forgot', H(async (req, res) => {
+  const user = await db.prepare('SELECT * FROM users WHERE email=?').get(String(req.body.email || '').trim().toLowerCase());
   if (user) {
     const token = newResetToken();
-    db.prepare(`UPDATE users SET reset_token=?, reset_expires=datetime('now','+1 hour') WHERE id=?`).run(token, user.id);
+    await db.prepare(`UPDATE users SET reset_token=?, reset_expires=datetime('now','+1 hour') WHERE id=?`).run(token, user.id);
     // Mode démo (aucun SMTP) : on affiche directement le lien, comme pour l'API.
     return res.redirect(url('/reset', { th: req.ctx.th, token }));
   }
@@ -262,11 +265,11 @@ r.get('/reset', H((req, res) => {
     </form></div>`;
   res.send(authShell(req, 'Réinitialisation', body));
 }));
-r.post('/reset', H((req, res) => {
-  const user = db.prepare(`SELECT * FROM users WHERE reset_token=? AND reset_expires > datetime('now')`).get(String(req.body.token || ''));
+r.post('/reset', H(async (req, res) => {
+  const user = await db.prepare(`SELECT * FROM users WHERE reset_token=? AND reset_expires > datetime('now')`).get(String(req.body.token || ''));
   if (!user) return res.redirect('/forgot?err=' + encodeURIComponent('Lien invalide ou expiré.'));
   if (String(req.body.password || '').length < 6) return res.redirect(url('/reset', { th: req.ctx.th, token: req.body.token, err: 'Mot de passe : 6 caractères minimum' }));
-  db.prepare(`UPDATE users SET password_hash=?, reset_token=NULL, reset_expires=NULL WHERE id=?`).run(hashPassword(req.body.password), user.id);
+  await db.prepare(`UPDATE users SET password_hash=?, reset_token=NULL, reset_expires=NULL WHERE id=?`).run(hashPassword(req.body.password), user.id);
   res.redirect(url('/login', { th: req.ctx.th, ok: 'Mot de passe mis à jour — connectez-vous.' }));
 }));
 
@@ -282,7 +285,7 @@ const stuPage = (req, title, body) => page(req.ctx, { title, body, tabs: STU_TAB
 const CIBLE_TXT = { all: 'Tous les étudiants', program: 'Une filière', class: 'Une classe' };
 
 /** Carte d'une annonce : avatar, auteur, date relative, cible, texte, « J'aime », modération admin. */
-function annonceCard(a, { ctx, liked = false, mine = false, admin = false }) {
+async function annonceCard(a, { ctx, liked = false, mine = false, admin = false }) {
   const estAdmin = a.author_role === 'admin';
   const who = estAdmin ? 'Administration' : `${a.first_name || ''} ${a.last_name || ''}`.trim() || 'MonRelevé';
   const sub = [relTime(a.created_at), estAdmin ? 'annonce officielle' : 'étudiant'].filter(Boolean).join(' · ');
@@ -300,7 +303,7 @@ function annonceCard(a, { ctx, liked = false, mine = false, admin = false }) {
     <header class="post-head">
       <span class="avatar" title="Administration">${esc(ini)}</span>
       <div class="who"><b>${esc(who)}</b><span class="tiny muted">${esc(sub)}</span></div>
-      <span class="chip gray" title="Destinataires">${esc(audienceLabel(a))}</span>
+      <span class="chip gray" title="Destinataires">${esc(await audienceLabel(a))}</span>
     </header>
     <div class="post-body"><p>${body}</p></div>
     <footer class="post-foot">${likeBtn}${a.pinned ? chip('Épinglée', 'violet') : ''}${mod}</footer>
@@ -308,8 +311,8 @@ function annonceCard(a, { ctx, liked = false, mine = false, admin = false }) {
 }
 
 /** Composeur d'annonce (administration) : texte + cible (tous / filière / classe) + épinglage. */
-function composer(req) {
-  const o = opts();
+async function composer(req) {
+  const o = await opts();
   const prog = o.programs.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
   const klass = o.classes.map((c) => `<option value="${c.id}">${esc(c.name)} (${esc(c.p)} · ${esc(c.l)})</option>`).join('');
   const h = hiddenT(req.ctx.t, { th: req.ctx.th });
@@ -333,17 +336,17 @@ function composer(req) {
 r.get('/accueil', (req, res, next) => {
   if (!req.user) { res.redirect('/login?err=' + encodeURIComponent('Session requise — connectez-vous.')); return; }
   next();
-}, H((req, res) => {
+}, H(async (req, res) => {
   const admin = req.user.role === 'admin';
-  const stud = admin ? null : student(req);
+  const stud = admin ? null : await student(req);
   const viewer = admin ? req.user : stud;
-  const posts = feed(viewer);
-  const liked = likedIds(req.user.id, posts.map((p) => p.id));
-  const cards = posts.map((a) => annonceCard(a, { ctx: req.ctx, liked: liked.has(a.id), admin })).join('');
+  const posts = await feed(viewer);
+  const liked = await likedIds(req.user.id, posts.map((p) => p.id));
+  const cards = (await Promise.all(posts.map(async (a) => await annonceCard(a, { ctx: req.ctx, liked: liked.has(a.id), admin })))).join('');
   const body = `<h1 style="font-size:18px;margin:4px 2px 12px">Annonces</h1>
     ${req.ctx.flash ? `<div class="banner ok">${req.ctx.flash}</div>` : ''}
     ${req.ctx.error ? `<div class="banner warn">${req.ctx.error}</div>` : ''}
-    ${admin ? composer(req) : ''}
+    ${admin ? await composer(req) : ''}
     <div class="feed">${cards || '<div class="empty">Aucune annonce pour le moment.</div>'}</div>
     ${admin ? `<p class="tiny muted" style="margin:14px 2px">Vous publiez en tant qu’administration — les annonces ciblées n’apparaissent qu’aux étudiants concernés.</p>`
             : `<p class="tiny muted" style="margin:14px 2px">Fil d’annonces de l’administration · <a class="link-btn" href="${url('/releve', req.ctx)}">voir mon relevé</a></p>`}`;
@@ -353,7 +356,7 @@ r.get('/accueil', (req, res, next) => {
 }));
 
 /* Publication d'une annonce (administration). */
-r.post('/accueil/annonces', need('admin'), H((req, res) => {
+r.post('/accueil/annonces', need('admin'), H(async (req, res) => {
   const fail = (m) => res.redirect(url('/accueil', { ...req.ctx, err: m }));
   const text = String(req.body.body || '').trim();
   if (!text) return fail('Annonce vide : écrivez un texte.');
@@ -361,13 +364,13 @@ r.post('/accueil/annonces', need('admin'), H((req, res) => {
   let programId = null, classId = null;
   if (audience === 'program') {
     programId = asNum(req.body.program_id);
-    if (!programId || !db.prepare('SELECT id FROM programs WHERE id=?').get(programId)) return fail('Choisissez une filière valide.');
+    if (!programId || !await db.prepare('SELECT id FROM programs WHERE id=?').get(programId)) return fail('Choisissez une filière valide.');
   }
   if (audience === 'class') {
     classId = asNum(req.body.class_id);
-    if (!classId || !db.prepare('SELECT id FROM classes WHERE id=?').get(classId)) return fail('Choisissez une classe valide.');
+    if (!classId || !await db.prepare('SELECT id FROM classes WHERE id=?').get(classId)) return fail('Choisissez une classe valide.');
   }
-  db.prepare('INSERT INTO announcements (author_id, body, audience, program_id, class_id, pinned) VALUES (?,?,?,?,?,?)')
+  await db.prepare('INSERT INTO announcements (author_id, body, audience, program_id, class_id, pinned) VALUES (?,?,?,?,?,?)')
     .run(req.user.id, text.slice(0, 2000), audience, programId, classId, req.body.pinned ? 1 : 0);
   res.redirect(url('/accueil', { ...req.ctx, ok: 'Annonce publiée.' }));
 }));
@@ -376,30 +379,30 @@ r.post('/accueil/annonces', need('admin'), H((req, res) => {
 r.post('/accueil/annonces/:id/aime', (req, res, next) => {
   if (!req.user) { res.redirect('/login?err=' + encodeURIComponent('Session requise — connectez-vous.')); return; }
   next();
-}, H((req, res) => {
+}, H(async (req, res) => {
   const id = Number(req.params.id);
-  if (!db.prepare('SELECT id FROM announcements WHERE id=?').get(id)) throw notFound('Annonce introuvable');
-  toggleLike(id, req.user.id);
+  if (!await db.prepare('SELECT id FROM announcements WHERE id=?').get(id)) throw notFound('Annonce introuvable');
+  await toggleLike(id, req.user.id);
   res.redirect(url('/accueil', req.ctx));
 }));
 
 /* Modération : épingler / désépingler. */
-r.post('/accueil/annonces/:id/epingler', need('admin'), H((req, res) => {
+r.post('/accueil/annonces/:id/epingler', need('admin'), H(async (req, res) => {
   const id = Number(req.params.id);
-  const a = db.prepare('SELECT pinned FROM announcements WHERE id=?').get(id);
+  const a = await db.prepare('SELECT pinned FROM announcements WHERE id=?').get(id);
   if (!a) throw notFound('Annonce introuvable');
-  db.prepare('UPDATE announcements SET pinned=? WHERE id=?').run(a.pinned ? 0 : 1, id);
+  await db.prepare('UPDATE announcements SET pinned=? WHERE id=?').run(a.pinned ? 0 : 1, id);
   res.redirect(url('/accueil', { ...req.ctx, ok: a.pinned ? 'Annonce désépinglée.' : 'Annonce épinglée.' }));
 }));
 
 /* Modération : supprimer (les « J'aime » suivent en cascade). */
-r.post('/accueil/annonces/:id/supprimer', need('admin'), H((req, res) => {
-  db.prepare('DELETE FROM announcements WHERE id=?').run(Number(req.params.id));
+r.post('/accueil/annonces/:id/supprimer', need('admin'), H(async (req, res) => {
+  await db.prepare('DELETE FROM announcements WHERE id=?').run(Number(req.params.id));
   res.redirect(url('/accueil', { ...req.ctx, ok: 'Annonce supprimée.' }));
 }));
 
-r.get('/saisie', need('student'), H((req, res) => {
-  const d = studentData(student(req));
+r.get('/saisie', need('student'), H(async (req, res) => {
+  const d = await studentData(await student(req));
   if (!d.template) return res.redirect(url('/accueil', { ...req.ctx, err: 'Aucun modèle disponible.' }));
   const cur = d.personal.semesters.find((s) => String(s.id) === String(req.query.sem)) || d.personal.semesters[0];
   const tabsHtml = `<div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:10px">${d.personal.semesters.map((s) =>
@@ -430,16 +433,16 @@ r.get('/saisie', need('student'), H((req, res) => {
   res.send(stuPage(req, 'Saisie', body));
 }));
 
-r.post('/saisie/:semId', need('student'), H((req, res) => {
-  const stud = student(req);
-  const d = studentData(stud);
+r.post('/saisie/:semId', need('student'), H(async (req, res) => {
+  const stud = await student(req);
+  const d = await studentData(stud);
   if (!d.template) throw badRequest('Aucun modèle');
   const sem = d.semesters.find((s) => String(s.id) === String(req.params.semId));
   if (!sem) throw notFound('Semestre inconnu');
   const ids = sem.units.flatMap((u) => u.courses.map((c) => c.id));
-  const stmt = db.prepare(`INSERT INTO grades (student_id,course_id,source,normal,rattrapage,updated_at) VALUES (?,?,'personal',?,?,datetime('now'))
+  const stmt = await db.prepare(`INSERT INTO grades (student_id,course_id,source,normal,rattrapage,updated_at) VALUES (?,?,'personal',?,?,datetime('now'))
     ON CONFLICT(student_id,course_id,source) DO UPDATE SET normal=excluded.normal, rattrapage=excluded.rattrapage, updated_at=datetime('now')`);
-  tx(() => { for (const cid of ids) stmt.run(stud.id, cid, score(req.body['n_' + cid] ?? ''), score(req.body['r_' + cid] ?? '')); });
+  await tx(async () => { for (const cid of ids) await stmt.run(stud.id, cid, score(req.body['n_' + cid] ?? ''), score(req.body['r_' + cid] ?? '')); });
   res.redirect(url('/saisie', { ...req.ctx, sem: sem.id, ok: 'Notes enregistrées · moyennes recalculées.' }));
 }));
 
@@ -457,9 +460,9 @@ const releveTable = (sem, { editable = false, locked = false } = {}) => `
 /* Relevé : la page complète — résumé, statistiques, relevés, progression */
 /* (tout ce qui était résumé sur l'accueil est ici, cf. demande : une seule vue « Relevé ») */
 /* ------------------------------------------------------------------ */
-r.get('/releve', need('student'), H((req, res) => {
-  const stud = student(req);
-  const d = studentData(stud);
+r.get('/releve', need('student'), H(async (req, res) => {
+  const stud = await student(req);
+  const d = await studentData(stud);
   if (!d.template) return res.redirect(url('/accueil', { ...req.ctx, err: 'Aucun modèle disponible.' }));
   const src = req.query.source === 'official' ? 'official' : 'personal';
   const sems = src === 'official' ? d.officialVisible : d.personal.semesters;
@@ -525,14 +528,14 @@ r.get('/releve', need('student'), H((req, res) => {
 
 /* ──── relevé PDF (une page A4) : mêmes données et mêmes garde-fous que la page /releve ──── */
 async function sendRelevePdf(res, stud, source, { allAccess = false } = {}) {
-  const d = studentData(stud);
+  const d = await studentData(stud);
   if (!d.template) throw badRequest('Aucun modèle pour cet étudiant');
   const official = source === 'official';
   const sems = official ? (allAccess ? d.official.semesters : d.officialVisible) : d.personal.semesters;
   if (official && !allAccess && !sems.length) throw badRequest('Aucun résultat officiel publié pour l’instant');
   const tot = official ? d.official : d.personal;
-  const u = db.prepare('SELECT first_name, last_name, email FROM users WHERE id=?').get(stud.user_id);
-  const cls = stud.class_id ? db.prepare('SELECT name FROM classes WHERE id=?').get(stud.class_id) : null;
+  const u = await db.prepare('SELECT first_name, last_name, email FROM users WHERE id=?').get(stud.user_id);
+  const cls = stud.class_id ? await db.prepare('SELECT name FROM classes WHERE id=?').get(stud.class_id) : null;
   const pdf = await buildRelevePdf({
     student: { ...stud, class_name: cls?.name }, user: u, template: d.template,
     sems, tot, source: official ? 'official' : 'personal', pubs: d.pubs,
@@ -543,11 +546,11 @@ async function sendRelevePdf(res, stud, source, { allAccess = false } = {}) {
 }
 
 r.get('/mon-releve.pdf', need('student'), H(async (req, res) => {
-  await sendRelevePdf(res, student(req), req.query.source === 'official' ? 'official' : 'personal');
+  await sendRelevePdf(res, await student(req), req.query.source === 'official' ? 'official' : 'personal');
 }));
 
-r.get('/mon-releve.xlsx', need('student'), H((req, res) => {
-  sendReleveXlsx(res, student(req), req.query.source === 'official' ? 'official' : 'personal');
+r.get('/mon-releve.xlsx', need('student'), H(async (req, res) => {
+  await sendReleveXlsx(res, await student(req), req.query.source === 'official' ? 'official' : 'personal');
 }));
 
 r.get('/moyennes', need('student'), H((req, res) => res.redirect(url('/releve', req.ctx))));
@@ -556,14 +559,14 @@ r.get('/moyennes', need('student'), H((req, res) => res.redirect(url('/releve', 
 /* ════════════════ EMPLOI DU TEMPS (calendrier) ════════════════ */
 const DAY_NAMES = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi'];
 
-r.get('/calendrier', need('student'), H((req, res) => {
-  const stud = student(req);
-  const d = studentData(stud);
+r.get('/calendrier', need('student'), H(async (req, res) => {
+  const stud = await student(req);
+  const d = await studentData(stud);
   const classId = stud.class_id; /* la classe porte l'emploi du temps */
   const sems = d.template ? d.personal.semesters : [];
   if (!sems.length) { res.send(stuPage(req, 'Calendrier', '<div class="empty">Aucun semestre défini pour votre filière.</div>')); return; }
   const cur = sems.find((x) => String(x.id) === String(req.query.sem)) || sems[0];
-  const slots = classId ? db.prepare(`
+  const slots = classId ? await db.prepare(`
       SELECT sl.day AS dday, sl.start, sl.end, sl.room, sl.title,
              c.name AS cname, un.code AS ucode
       FROM schedule_slots sl
@@ -690,8 +693,8 @@ r.get('/calendrier', need('student'), H((req, res) => {
   res.send(stuPage(req, 'Calendrier', body));
 }));
 
-r.get('/profil', need('student'), H((req, res) => {
-  const u = req.user; const s = student(req); const o = opts();
+r.get('/profil', need('student'), H(async (req, res) => {
+  const u = req.user; const s = await student(req); const o = await opts();
   const body = `<h1 style="font-size:18px;margin:4px 2px 10px">Mon profil</h1>
     <div class="card"><div class="row spread"><b>${esc(u.last_name)} ${esc(u.first_name)}</b><span class="tiny muted">${esc(u.email)}</span></div></div>
     <h3 class="section-title" style="font-size:13px">Scolarité</h3>
@@ -725,22 +728,22 @@ r.get('/profil', need('student'), H((req, res) => {
     </form>`;
   res.send(stuPage(req, 'Profil', body));
 }));
-r.post('/profil/enrollment', need('student'), H((req, res) => {
-  const s = student(req);
-  db.prepare('UPDATE students SET program_id=?, level_id=?, class_id=?, academic_year_id=? WHERE id=?')
+r.post('/profil/enrollment', need('student'), H(async (req, res) => {
+  const s = await student(req);
+  await db.prepare('UPDATE students SET program_id=?, level_id=?, class_id=?, academic_year_id=? WHERE id=?')
     .run(asNum(req.body.program_id), asNum(req.body.level_id), asNum(req.body.class_id) ?? null, asNum(req.body.academic_year_id) ?? null, s.id);
   res.redirect(url('/profil', { ...req.ctx, ok: 'Scolarité mise à jour.' }));
 }));
-r.post('/profil/names', need('student'), H((req, res) => {
-  db.prepare('UPDATE users SET last_name=?, first_name=? WHERE id=?').run(String(req.body.last_name || '').trim() || req.user.last_name, String(req.body.first_name || '').trim() || req.user.first_name, req.user.id);
+r.post('/profil/names', need('student'), H(async (req, res) => {
+  await db.prepare('UPDATE users SET last_name=?, first_name=? WHERE id=?').run(String(req.body.last_name || '').trim() || req.user.last_name, String(req.body.first_name || '').trim() || req.user.first_name, req.user.id);
   res.redirect(url('/profil', { ...req.ctx, ok: 'Profil enregistré.' }));
 }));
-r.post('/profil/password', need('student'), H((req, res) => {
+r.post('/profil/password', need('student'), H(async (req, res) => {
   const fail = (m) => res.redirect(url('/profil', { ...req.ctx, err: m }));
   if (!verifyPassword(String(req.body.old_password || ''), req.user.password_hash)) return fail('Mot de passe actuel incorrect.');
   if (req.body.password !== req.body.password2) return fail('La confirmation ne correspond pas.');
   if (String(req.body.password || '').length < 6) return fail('Nouveau mot de passe : 6 caractères minimum.');
-  db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hashPassword(req.body.password), req.user.id);
+  await db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hashPassword(req.body.password), req.user.id);
   res.redirect(url('/profil', { ...req.ctx, ok: 'Mot de passe changé.' }));
 }));
 
@@ -749,15 +752,15 @@ r.post('/profil/password', need('student'), H((req, res) => {
 /* ------------------------------------------------------------------ */
 const adminPage = (req, title, body) => page(req.ctx, { title, body, adminTab: (req.ctx.pathname.match(/^\/admin\/(etudiants|modeles|import|referentiels|emploi)/)?.[0] || '/admin').replace('/etudiants/', '/etudiants').replace('/modeles/', '/modeles') });
 
-r.get('/admin', need('admin'), H((req, res) => {
+r.get('/admin', need('admin'), H(async (req, res) => {
   const st = {
-    students: db.prepare('SELECT COUNT(*) n FROM students').get().n,
-    users: db.prepare('SELECT COUNT(*) n FROM users').get().n,
-    templates: db.prepare('SELECT COUNT(*) n FROM templates').get().n,
-    published: db.prepare("SELECT COUNT(*) n FROM publications WHERE status IN ('published','locked')").get().n,
+    students: (await db.prepare('SELECT COUNT(*) n FROM students').get()).n,
+    users: (await db.prepare('SELECT COUNT(*) n FROM users').get()).n,
+    templates: (await db.prepare('SELECT COUNT(*) n FROM templates').get()).n,
+    published: (await db.prepare("SELECT COUNT(*) n FROM publications WHERE status IN ('published','locked')").get()).n,
   };
-  const byProgram = db.prepare(`SELECT p.name, COUNT(s.id) n FROM students s JOIN programs p ON p.id=s.program_id GROUP BY p.id ORDER BY n DESC`).all();
-  const recent = db.prepare(`SELECT s.id, u.first_name, u.last_name, s.matricule, p.name AS program FROM students s JOIN users u ON u.id=s.user_id LEFT JOIN programs p ON p.id=s.program_id ORDER BY s.created_at DESC, s.id DESC LIMIT 6`).all();
+  const byProgram = await db.prepare(`SELECT p.name, COUNT(s.id) n FROM students s JOIN programs p ON p.id=s.program_id GROUP BY p.id ORDER BY n DESC`).all();
+  const recent = await db.prepare(`SELECT s.id, u.first_name, u.last_name, s.matricule, p.name AS program FROM students s JOIN users u ON u.id=s.user_id LEFT JOIN programs p ON p.id=s.program_id ORDER BY s.created_at DESC, s.id DESC LIMIT 6`).all();
   const body = `<h1 style="font-size:18px;margin:4px 2px 10px">Tableau de bord</h1>
     <div class="cards2">
       <div class="stat"><div class="v">${st.students}</div><div class="k">Étudiants</div></div>
@@ -788,11 +791,11 @@ const studentSelect = `SELECT s.id, s.matricule, s.program_id, s.level_id, s.cla
   LEFT JOIN programs p ON p.id=s.program_id LEFT JOIN levels l ON l.id=s.level_id
   LEFT JOIN classes c ON c.id=s.class_id LEFT JOIN academic_years y ON y.id=s.academic_year_id`;
 
-r.get('/admin/etudiants', need('admin'), H((req, res) => {
+r.get('/admin/etudiants', need('admin'), H(async (req, res) => {
   const q = String(req.query.q || '').trim();
-  let rows = db.prepare(studentSelect + ' ORDER BY u.last_name, u.first_name LIMIT 500').all();
+  let rows = await db.prepare(studentSelect + ' ORDER BY u.last_name, u.first_name LIMIT 500').all();
   if (q) { const qq = q.toLowerCase(); rows = rows.filter((s) => [s.first_name, s.last_name, s.email, s.matricule].some((v) => String(v || '').toLowerCase().includes(qq))); }
-  const o = opts();
+  const o = await opts();
   const body = `<div class="row spread" style="margin:4px 2px 10px"><h1 style="font-size:18px;margin:0">Étudiants (${rows.length})</h1></div>
     <form class="card" method="get" action="${url('/admin/etudiants', req.ctx)}" style="padding:10px"><div class="row" style="gap:8px">
       <input class="input grow" name="q" value="${esc(q)}" placeholder="Rechercher nom, e-mail, matricule…"/>
@@ -821,27 +824,27 @@ r.get('/admin/etudiants', need('admin'), H((req, res) => {
   res.send(adminPage(req, 'Étudiants', body));
 }));
 
-r.post('/admin/etudiants', need('admin'), H((req, res) => {
+r.post('/admin/etudiants', need('admin'), H(async (req, res) => {
   const b = req.body;
   for (const f of ['first_name', 'last_name', 'email', 'matricule']) if (!String(b[f] || '').trim()) return res.redirect(url('/admin/etudiants', { ...req.ctx, err: `Champ manquant : ${f}` }));
   if (!emailRe.test(b.email)) return res.redirect(url('/admin/etudiants', { ...req.ctx, err: 'E-mail invalide' }));
   const generated = !String(b.password || '').trim();
   const pw = generated ? 'etudiant123' : String(b.password);
-  const ui = tx(() => {
-    const x = db.prepare('INSERT INTO users (email,password_hash,role,first_name,last_name) VALUES (?,?,?,?,?)')
+  const ui = await tx(async () => {
+    const x = await db.prepare('INSERT INTO users (email,password_hash,role,first_name,last_name) VALUES (?,?,?,?,?)')
       .run(b.email.trim().toLowerCase(), hashPassword(pw), 'student', b.first_name.trim(), b.last_name.trim());
-    db.prepare('INSERT INTO students (user_id,matricule,program_id,level_id,class_id,academic_year_id) VALUES (?,?,?,?,?,?)')
-      .run(x.lastInsertRowid, b.matricule.trim(), asNum(b.program_id), asNum(b.level_id), null, asNum(b.academic_year_id) ?? db.prepare('SELECT id FROM academic_years WHERE is_current=1').get()?.id ?? null);
+    await db.prepare('INSERT INTO students (user_id,matricule,program_id,level_id,class_id,academic_year_id) VALUES (?,?,?,?,?,?)')
+      .run(x.lastInsertRowid, b.matricule.trim(), asNum(b.program_id), asNum(b.level_id), null, asNum(b.academic_year_id) ?? (await db.prepare('SELECT id FROM academic_years WHERE is_current=1').get())?.id ?? null);
     return x;
   });
-  res.redirect(url('/admin/etudiants/' + db.prepare('SELECT id FROM students WHERE user_id=?').get(ui.lastInsertRowid).id, { ...req.ctx, ok: 'Étudiant créé' + (generated ? ' — mot de passe initial : etudiant123' : ' — mot de passe : le vôtre') }));
+  res.redirect(url('/admin/etudiants/' + (await db.prepare('SELECT id FROM students WHERE user_id=?').get(ui.lastInsertRowid)).id, { ...req.ctx, ok: 'Étudiant créé' + (generated ? ' — mot de passe initial : etudiant123' : ' — mot de passe : le vôtre') }));
 }));
 
-r.get('/admin/etudiants/:id', need('admin'), H((req, res) => {
-  const s = db.prepare(studentSelect + ' WHERE s.id=?').get(Number(req.params.id));
+r.get('/admin/etudiants/:id', need('admin'), H(async (req, res) => {
+  const s = await db.prepare(studentSelect + ' WHERE s.id=?').get(Number(req.params.id));
   if (!s) throw notFound('Étudiant introuvable');
-  const d = studentData(s);
-  const o = opts();
+  const d = await studentData(s);
+  const o = await opts();
   const officialSem = d.template ? d.official.semesters : [];
   const gradesTables = d.template ? officialSem.map((sem, idx) => {
     const tree = d.semesters.find((x) => x.id === sem.id);
@@ -895,48 +898,48 @@ r.get('/admin/etudiants/:id', need('admin'), H((req, res) => {
   res.send(adminPage(req, 'Étudiant', body));
 }));
 
-r.post('/admin/etudiants/:id', need('admin'), H((req, res) => {
-  const s = db.prepare('SELECT * FROM students WHERE id=?').get(Number(req.params.id));
+r.post('/admin/etudiants/:id', need('admin'), H(async (req, res) => {
+  const s = await db.prepare('SELECT * FROM students WHERE id=?').get(Number(req.params.id));
   if (!s) throw notFound();
   const b = req.body;
-  if (b.toggle_active) { db.prepare('UPDATE users SET is_active=1-is_active WHERE id=?').run(s.user_id); return res.redirect(url('/admin/etudiants/' + s.id, { ...req.ctx, ok: 'Compte mis à jour.' })); }
-  tx(() => {
-    db.prepare('UPDATE users SET first_name=COALESCE(?,first_name), last_name=COALESCE(?,last_name), email=COALESCE(?,email) WHERE id=?')
+  if (b.toggle_active) { await db.prepare('UPDATE users SET is_active=1-is_active WHERE id=?').run(s.user_id); return res.redirect(url('/admin/etudiants/' + s.id, { ...req.ctx, ok: 'Compte mis à jour.' })); }
+  await tx(async () => {
+    await db.prepare('UPDATE users SET first_name=COALESCE(?,first_name), last_name=COALESCE(?,last_name), email=COALESCE(?,email) WHERE id=?')
       .run(String(b.first_name || '').trim() || null, String(b.last_name || '').trim() || null, b.email ? String(b.email).trim().toLowerCase() : null, s.user_id);
-    db.prepare('UPDATE students SET matricule=COALESCE(?,matricule), program_id=?, level_id=?, academic_year_id=? WHERE id=?')
+    await db.prepare('UPDATE students SET matricule=COALESCE(?,matricule), program_id=?, level_id=?, academic_year_id=? WHERE id=?')
       .run(String(b.matricule || '').trim() || null, asNum(b.program_id), asNum(b.level_id), s.academic_year_id, s.id);
-    if (String(b.reset_password || '').trim()) db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hashPassword(b.reset_password), s.user_id);
+    if (String(b.reset_password || '').trim()) await db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hashPassword(b.reset_password), s.user_id);
   });
   res.redirect(url('/admin/etudiants/' + s.id, { ...req.ctx, ok: 'Fiche enregistrée.' }));
 }));
-r.post('/admin/etudiants/:id/delete', need('admin'), H((req, res) => {
+r.post('/admin/etudiants/:id/delete', need('admin'), H(async (req, res) => {
   if (req.body.confirm !== '1') return res.redirect(url('/admin/etudiants/' + req.params.id, { ...req.ctx, err: 'Cochez la confirmation de suppression.' }));
-  const s = db.prepare('SELECT * FROM students WHERE id=?').get(Number(req.params.id));
-  if (s) db.prepare('DELETE FROM users WHERE id=?').run(s.user_id);
+  const s = await db.prepare('SELECT * FROM students WHERE id=?').get(Number(req.params.id));
+  if (s) await db.prepare('DELETE FROM users WHERE id=?').run(s.user_id);
   res.redirect(url('/admin/etudiants', { ...req.ctx, ok: 'Étudiant supprimé.' }));
 }));
-r.post('/admin/etudiants/:id/official/:semId', need('admin'), H((req, res) => {
-  const s = db.prepare('SELECT * FROM students WHERE id=?').get(Number(req.params.id));
+r.post('/admin/etudiants/:id/official/:semId', need('admin'), H(async (req, res) => {
+  const s = await db.prepare('SELECT * FROM students WHERE id=?').get(Number(req.params.id));
   if (!s) throw notFound();
-  const sem = db.prepare('SELECT * FROM semesters WHERE id=?').get(Number(req.params.semId));
+  const sem = await db.prepare('SELECT * FROM semesters WHERE id=?').get(Number(req.params.semId));
   if (!sem) throw notFound('Semestre inconnu');
-  const pub = db.prepare('SELECT status FROM publications WHERE semester_id=?').get(sem.id);
+  const pub = await db.prepare('SELECT status FROM publications WHERE semester_id=?').get(sem.id);
   if (pub?.status === 'locked') return res.redirect(url('/admin/etudiants/' + s.id, { ...req.ctx, err: 'Semestre verrouillé : déverrouillez-le avant de corriger.' }));
-  const courses = db.prepare(`SELECT c.id FROM courses c JOIN units u ON u.id=c.unit_id WHERE u.semester_id=?`).all(sem.id).map((c) => c.id);
-  const stmt = db.prepare(`INSERT INTO grades (student_id,course_id,source,normal,rattrapage,updated_at) VALUES (?,?,'official',?,?,datetime('now'))
+  const courses = (await db.prepare(`SELECT c.id FROM courses c JOIN units u ON u.id=c.unit_id WHERE u.semester_id=?`).all(sem.id)).map((c) => c.id);
+  const stmt = await db.prepare(`INSERT INTO grades (student_id,course_id,source,normal,rattrapage,updated_at) VALUES (?,?,'official',?,?,datetime('now'))
     ON CONFLICT(student_id,course_id,source) DO UPDATE SET normal=excluded.normal, rattrapage=excluded.rattrapage, updated_at=datetime('now')`);
-  tx(() => { for (const cid of courses) stmt.run(s.id, cid, score(req.body['n_' + cid] ?? ''), score(req.body['r_' + cid] ?? '')); });
+  await tx(async () => { for (const cid of courses) await stmt.run(s.id, cid, score(req.body['n_' + cid] ?? ''), score(req.body['r_' + cid] ?? '')); });
   res.redirect(url('/admin/etudiants/' + s.id, { ...req.ctx, ok: 'Notes officielles enregistrées (S' + sem.number + ').' }));
 }));
 
 /* — Modèles de relevés — */
-r.get('/admin/modeles', need('admin'), H((req, res) => {
-  const rows = db.prepare(`SELECT t.*, p.name AS program, l.name AS level, y.label AS year,
+r.get('/admin/modeles', need('admin'), H(async (req, res) => {
+  const rows = await db.prepare(`SELECT t.*, p.name AS program, l.name AS level, y.label AS year,
       (SELECT COUNT(*) FROM semesters s WHERE s.template_id=t.id) AS n_semesters,
       (SELECT COUNT(*) FROM courses c JOIN units u ON u.id=c.unit_id JOIN semesters s2 ON s2.id=u.semester_id WHERE s2.template_id=t.id) AS n_courses
     FROM templates t JOIN programs p ON p.id=t.program_id JOIN levels l ON l.id=t.level_id
     LEFT JOIN academic_years y ON y.id=t.academic_year_id ORDER BY l.ord, p.name`).all();
-  const o = opts();
+  const o = await opts();
   const body = `<h1 style="font-size:18px;margin:4px 2px 10px">Modèles de relevés (${rows.length})</h1>
     <div class="card" style="padding:6px 10px;overflow-x:auto"><table class="tbl"><thead><tr><th>Modèle</th><th>Filière · Niveau · Année</th><th class="n">Semestres</th><th class="n">Matières</th><th class="n"></th></tr></thead><tbody>
     ${rows.map((t) => `<tr><td><a class="link-btn" href="${url('/admin/modeles/' + t.id, req.ctx)}">${esc(t.name)}</a></td>
@@ -957,20 +960,20 @@ r.get('/admin/modeles', need('admin'), H((req, res) => {
   res.send(adminPage(req, 'Modèles', body));
 }));
 
-r.post('/admin/modeles', need('admin'), H((req, res) => {
+r.post('/admin/modeles', need('admin'), H(async (req, res) => {
   const b = req.body;
-  const name = String(b.name || '').trim() || (() => {
-    const p = db.prepare('SELECT name FROM programs WHERE id=?').get(b.program_id)?.name;
-    const l = db.prepare('SELECT name FROM levels WHERE id=?').get(b.level_id)?.name;
+  const name = String(b.name || '').trim() || (async () => {
+    const p = (await db.prepare('SELECT name FROM programs WHERE id=?').get(b.program_id))?.name;
+    const l = (await db.prepare('SELECT name FROM levels WHERE id=?').get(b.level_id))?.name;
     return `${l} — ${p}`;
   })();
-  const info = db.prepare('INSERT INTO templates (program_id,level_id,academic_year_id,name,rules_json) VALUES (?,?,?,?,?)')
+  const info = await db.prepare('INSERT INTO templates (program_id,level_id,academic_year_id,name,rules_json) VALUES (?,?,?,?,?)')
     .run(asNum(b.program_id), asNum(b.level_id), asNum(b.academic_year_id), name, JSON.stringify({}));
   res.redirect(url('/admin/modeles/' + info.lastInsertRowid, { ...req.ctx, ok: 'Modèle créé.' }));
 }));
-r.post('/admin/modeles/:id/delete', need('admin'), H((req, res) => {
+r.post('/admin/modeles/:id/delete', need('admin'), H(async (req, res) => {
   if (req.body.confirm !== '1') return res.redirect(url('/admin/modeles/' + req.params.id, { ...req.ctx, err: 'Cochez la confirmation.' }));
-  db.prepare('DELETE FROM templates WHERE id=?').run(Number(req.params.id));
+  await db.prepare('DELETE FROM templates WHERE id=?').run(Number(req.params.id));
   res.redirect(url('/admin/modeles', { ...req.ctx, ok: 'Modèle supprimé.' }));
 }));
 
@@ -982,13 +985,13 @@ const RULE_OPTIONS = {
   credit_validation_basis: [['normal', 'note NORMALE ≥ seuil (règle relevé Excel)'], ['definitive', 'note DÉFINITIVE ≥ seuil']],
 };
 
-r.get('/admin/modeles/:id', need('admin'), H((req, res) => {
-  const t = db.prepare(`SELECT t.*, p.name AS program, l.name AS level, y.label AS year FROM templates t
+r.get('/admin/modeles/:id', need('admin'), H(async (req, res) => {
+  const t = await db.prepare(`SELECT t.*, p.name AS program, l.name AS level, y.label AS year FROM templates t
     JOIN programs p ON p.id=t.program_id JOIN levels l ON l.id=t.level_id LEFT JOIN academic_years y ON y.id=t.academic_year_id WHERE t.id=?`).get(Number(req.params.id));
   if (!t) throw notFound('Modèle introuvable');
-  const tree = loadTemplateTree(t.id);
+  const tree = await loadTemplateTree(t.id);
   const rules = resolveRules(t);
-  const o = opts();
+  const o = await opts();
   const ruleForm = `<h3 class="section-title" style="font-size:13px">Règles de calcul <span class="tiny muted">(tout est configurable — rien n’est codé en dur)</span></h3>
     <form class="card" method="post" action="${url('/admin/modeles/' + t.id + '/rules', req.ctx)}">${hiddenT(req.ctx.t, { th: req.ctx.th })}
     <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px">
@@ -999,8 +1002,8 @@ r.get('/admin/modeles/:id', need('admin'), H((req, res) => {
     </div>
     <button class="btn sm">Enregistrer les règles</button></form>`;
 
-  const semCards = tree.map((s, si) => {
-    const pub = db.prepare('SELECT status FROM publications WHERE semester_id=?').get(s.id) || { status: 'draft' };
+  const semCards = (await Promise.all(tree.map(async (s, si) => {
+    const pub = await db.prepare('SELECT status FROM publications WHERE semester_id=?').get(s.id) || { status: 'draft' };
     return `<div class="card" style="margin-top:12px">
       <div class="row spread"><h3 style="margin:0;font-size:14px">Semestre ${s.number} — ${esc(s.name)}</h3><span>${pubChip(pub.status)} · ${s.units.reduce((a, u) => a + u.courses.length, 0)} matières</span></div>
       <form class="row" style="margin-top:8px;gap:6px;flex-wrap:wrap" method="post" action="${url('/admin/semesters/' + s.id, req.ctx)}">${hiddenT(req.ctx.t, { th: req.ctx.th })}
@@ -1037,7 +1040,7 @@ r.get('/admin/modeles/:id', need('admin'), H((req, res) => {
         <input class="input" style="flex:1;min-width:160px;padding:7px 10px" name="name" placeholder="nom de l’UE"/>
         <button class="btn mini" style="width:auto">＋ UE</button></form>
     </div>`;
-  }).join('');
+  }))).join('');
 
   const body = `<div class="row spread" style="flex-wrap:wrap;gap:8px;margin:4px 2px 10px">
       <h1 style="font-size:18px;margin:0">${esc(t.name)}</h1>
@@ -1065,13 +1068,13 @@ r.get('/admin/modeles/:id', need('admin'), H((req, res) => {
   res.send(adminPage(req, t.name, body));
 }));
 
-r.post('/admin/modeles/:id', need('admin'), H((req, res) => {
-  db.prepare(`UPDATE templates SET name=?, program_id=?, level_id=?, academic_year_id=?, updated_at=datetime('now') WHERE id=?`)
+r.post('/admin/modeles/:id', need('admin'), H(async (req, res) => {
+  await db.prepare(`UPDATE templates SET name=?, program_id=?, level_id=?, academic_year_id=?, updated_at=datetime('now') WHERE id=?`)
     .run(String(req.body.name || '').trim(), asNum(req.body.program_id), asNum(req.body.level_id), asNum(req.body.academic_year_id), Number(req.params.id));
   res.redirect(url('/admin/modeles/' + req.params.id, { ...req.ctx, ok: 'Modèle enregistré.' }));
 }));
-r.post('/admin/modeles/:id/rules', need('admin'), H((req, res) => {
-  const t = db.prepare('SELECT * FROM templates WHERE id=?').get(Number(req.params.id));
+r.post('/admin/modeles/:id/rules', need('admin'), H(async (req, res) => {
+  const t = await db.prepare('SELECT * FROM templates WHERE id=?').get(Number(req.params.id));
   const cur = resolveRules(t);
   const nextRules = {
     ...cur,
@@ -1082,88 +1085,88 @@ r.post('/admin/modeles/:id/rules', need('admin'), H((req, res) => {
     rattrapage_weight: asNum(req.body.rattrapage_weight) ?? cur.rattrapage_weight,
     pass_threshold: asNum(req.body.pass_threshold) ?? cur.pass_threshold,
   };
-  db.prepare(`UPDATE templates SET rules_json=?, updated_at=datetime('now') WHERE id=?`).run(JSON.stringify(nextRules), t.id);
+  await db.prepare(`UPDATE templates SET rules_json=?, updated_at=datetime('now') WHERE id=?`).run(JSON.stringify(nextRules), t.id);
   res.redirect(url('/admin/modeles/' + t.id, { ...req.ctx, ok: 'Règles de calcul enregistrées — tous les barèmes sont recalculés.' }));
 }));
-r.post('/admin/modeles/:id/semesters', need('admin'), H((req, res) => {
+r.post('/admin/modeles/:id/semesters', need('admin'), H(async (req, res) => {
   const number = asNum(req.body.number);
   if (number == null) return res.redirect(url('/admin/modeles/' + req.params.id, { ...req.ctx, err: 'Numéro de semestre requis.' }));
-  const ord = db.prepare('SELECT COALESCE(MAX(ord),0)+1 o FROM semesters WHERE template_id=?').get(Number(req.params.id)).o;
-  db.prepare('INSERT INTO semesters (template_id,number,name,ects_expected,ord) VALUES (?,?,?,?,?)')
+  const ord = (await db.prepare('SELECT COALESCE(MAX(ord),0)+1 o FROM semesters WHERE template_id=?').get(Number(req.params.id))).o;
+  await db.prepare('INSERT INTO semesters (template_id,number,name,ects_expected,ord) VALUES (?,?,?,?,?)')
     .run(Number(req.params.id), number, String(req.body.name || '').trim() || `Semestre ${number}`, asNum(req.body.ects_expected) ?? 30, ord);
   res.redirect(url('/admin/modeles/' + req.params.id, { ...req.ctx, ok: 'Semestre ajouté.' }));
 }));
-r.post('/admin/semesters/:id', need('admin'), H((req, res) => {
-  const sem = db.prepare('SELECT * FROM semesters WHERE id=?').get(Number(req.params.id));
-  db.prepare('UPDATE semesters SET number=?, name=?, ects_expected=? WHERE id=?')
+r.post('/admin/semesters/:id', need('admin'), H(async (req, res) => {
+  const sem = await db.prepare('SELECT * FROM semesters WHERE id=?').get(Number(req.params.id));
+  await db.prepare('UPDATE semesters SET number=?, name=?, ects_expected=? WHERE id=?')
     .run(asNum(req.body.number) ?? sem.number, String(req.body.name || '').trim() || sem.name, asNum(req.body.ects_expected) ?? sem.ects_expected, sem.id);
   res.redirect(url('/admin/modeles/' + sem.template_id, { ...req.ctx, ok: 'Semestre mis à jour.' }));
 }));
-r.post('/admin/semesters/:id/delete', need('admin'), H((req, res) => {
-  const sem = db.prepare('SELECT * FROM semesters WHERE id=?').get(Number(req.params.id));
-  db.prepare('DELETE FROM semesters WHERE id=?').run(sem.id);
+r.post('/admin/semesters/:id/delete', need('admin'), H(async (req, res) => {
+  const sem = await db.prepare('SELECT * FROM semesters WHERE id=?').get(Number(req.params.id));
+  await db.prepare('DELETE FROM semesters WHERE id=?').run(sem.id);
   res.redirect(url('/admin/modeles/' + sem.template_id, { ...req.ctx, ok: 'Semestre supprimé.' }));
 }));
-r.post('/admin/semesters/:id/publication', need('admin'), H((req, res) => {
-  const sem = db.prepare('SELECT * FROM semesters WHERE id=?').get(Number(req.params.id));
+r.post('/admin/semesters/:id/publication', need('admin'), H(async (req, res) => {
+  const sem = await db.prepare('SELECT * FROM semesters WHERE id=?').get(Number(req.params.id));
   if (!sem) throw notFound();
   const action = String(req.body.action || '');
-  const current = db.prepare('SELECT * FROM publications WHERE semester_id=?').get(sem.id);
-  if (action === 'draft') db.prepare('DELETE FROM publications WHERE semester_id=?').run(sem.id);
+  const current = await db.prepare('SELECT * FROM publications WHERE semester_id=?').get(sem.id);
+  if (action === 'draft') await db.prepare('DELETE FROM publications WHERE semester_id=?').run(sem.id);
   else if (action === 'lock') {
     if (!current) return res.redirect(url('/admin/modeles/' + sem.template_id, { ...req.ctx, err: 'Publiez d’abord les résultats avant de les verrouiller.' }));
-    db.prepare(`UPDATE publications SET status='locked' WHERE semester_id=?`).run(sem.id);
+    await db.prepare(`UPDATE publications SET status='locked' WHERE semester_id=?`).run(sem.id);
   } else if (action === 'unlock') {
     if (current?.status !== 'locked') return res.redirect(url('/admin/modeles/' + sem.template_id, { ...req.ctx, err: 'Ce semestre n’est pas verrouillé.' }));
-    db.prepare(`UPDATE publications SET status='published' WHERE semester_id=?`).run(sem.id);
+    await db.prepare(`UPDATE publications SET status='published' WHERE semester_id=?`).run(sem.id);
   } else {
     // publish : snapshot des résultats officiels de tous les étudiants du semestre
-    const template = db.prepare('SELECT * FROM templates WHERE id=?').get(sem.template_id);
-    const tree = loadTemplateTree(template.id);
+    const template = await db.prepare('SELECT * FROM templates WHERE id=?').get(sem.template_id);
+    const tree = await loadTemplateTree(template.id);
     const semTree = tree.find((s) => s.id === sem.id);
-    const students = db.prepare('SELECT id FROM students WHERE program_id=? AND level_id=?').all(template.program_id, template.level_id);
+    const students = await db.prepare('SELECT id FROM students WHERE program_id=? AND level_id=?').all(template.program_id, template.level_id);
     const snapshot = {};
     for (const st of students) {
       const ids = semTree.units.flatMap((u) => u.courses.map((c) => c.id));
       const m = new Map();
-      if (ids.length) { const marks = ids.map(() => '?').join(','); for (const row of db.prepare(`SELECT course_id, normal, rattrapage FROM grades WHERE student_id=? AND source='official' AND course_id IN (${marks})`).all(st.id, ...ids)) m.set(row.course_id, row); }
+      if (ids.length) { const marks = ids.map(() => '?').join(','); for (const row of await db.prepare(`SELECT course_id, normal, rattrapage FROM grades WHERE student_id=? AND source='official' AND course_id IN (${marks})`).all(st.id, ...ids)) m.set(row.course_id, row); }
       const fake = computeReleve(template, [semTree], m);
       snapshot[st.id] = { average: fake.semesters[0]?.average ?? null, creditsEarned: fake.semesters[0]?.creditsEarned ?? 0 };
     }
-    db.prepare(`INSERT INTO publications (semester_id,status,published_by,published_at,snapshot_json) VALUES (?,'published',?,datetime('now'),?)
+    await db.prepare(`INSERT INTO publications (semester_id,status,published_by,published_at,snapshot_json) VALUES (?,'published',?,datetime('now'),?)
       ON CONFLICT(semester_id) DO UPDATE SET status='published', published_by=excluded.published_by, published_at=datetime('now'), snapshot_json=excluded.snapshot_json`)
       .run(sem.id, req.user.id, JSON.stringify({ published: true, semester: snapshot }));
   }
   res.redirect(url('/admin/modeles/' + sem.template_id, { ...req.ctx, ok: 'Publication : ' + action + ' ✓' }));
 }));
-r.post('/admin/semesters/:id/units', need('admin'), H((req, res) => {
-  const sem = db.prepare('SELECT * FROM semesters WHERE id=?').get(Number(req.params.id));
-  const ord = db.prepare('SELECT COALESCE(MAX(ord),0)+1 o FROM units WHERE semester_id=?').get(sem.id).o;
-  db.prepare('INSERT INTO units (semester_id,code,name,ord) VALUES (?,?,?,?)').run(sem.id, String(req.body.code || 'UE').trim(), String(req.body.name || '').trim() || req.body.code, ord);
+r.post('/admin/semesters/:id/units', need('admin'), H(async (req, res) => {
+  const sem = await db.prepare('SELECT * FROM semesters WHERE id=?').get(Number(req.params.id));
+  const ord = (await db.prepare('SELECT COALESCE(MAX(ord),0)+1 o FROM units WHERE semester_id=?').get(sem.id)).o;
+  await db.prepare('INSERT INTO units (semester_id,code,name,ord) VALUES (?,?,?,?)').run(sem.id, String(req.body.code || 'UE').trim(), String(req.body.name || '').trim() || req.body.code, ord);
   res.redirect(url('/admin/modeles/' + sem.template_id, { ...req.ctx, ok: 'UE ajoutée.' }));
 }));
-r.post('/admin/units/:id/delete', need('admin'), H((req, res) => {
-  const u = db.prepare(`SELECT u.*, s.template_id FROM units u JOIN semesters s ON s.id=u.semester_id WHERE u.id=?`).get(Number(req.params.id));
-  db.prepare('DELETE FROM units WHERE id=?').run(u.id);
+r.post('/admin/units/:id/delete', need('admin'), H(async (req, res) => {
+  const u = await db.prepare(`SELECT u.*, s.template_id FROM units u JOIN semesters s ON s.id=u.semester_id WHERE u.id=?`).get(Number(req.params.id));
+  await db.prepare('DELETE FROM units WHERE id=?').run(u.id);
   res.redirect(url('/admin/modeles/' + u.template_id, { ...req.ctx, ok: 'UE supprimée.' }));
 }));
-r.post('/admin/units/:id/courses', need('admin'), H((req, res) => {
-  const u = db.prepare(`SELECT u.*, s.template_id FROM units u JOIN semesters s ON s.id=u.semester_id WHERE u.id=?`).get(Number(req.params.id));
+r.post('/admin/units/:id/courses', need('admin'), H(async (req, res) => {
+  const u = await db.prepare(`SELECT u.*, s.template_id FROM units u JOIN semesters s ON s.id=u.semester_id WHERE u.id=?`).get(Number(req.params.id));
   if (!String(req.body.name || '').trim()) return res.redirect(url('/admin/modeles/' + u.template_id, { ...req.ctx, err: 'Nom de matière requis.' }));
-  const ord = db.prepare('SELECT COALESCE(MAX(ord),0)+1 o FROM courses WHERE unit_id=?').get(u.id).o;
-  db.prepare('INSERT INTO courses (unit_id,name,coefficient,credits,ord) VALUES (?,?,?,?,?)')
+  const ord = (await db.prepare('SELECT COALESCE(MAX(ord),0)+1 o FROM courses WHERE unit_id=?').get(u.id)).o;
+  await db.prepare('INSERT INTO courses (unit_id,name,coefficient,credits,ord) VALUES (?,?,?,?,?)')
     .run(u.id, String(req.body.name).trim(), asNum(req.body.coefficient) ?? 1, asNum(req.body.credits) ?? 1, ord);
   res.redirect(url('/admin/modeles/' + u.template_id, { ...req.ctx, ok: 'Matière ajoutée.' }));
 }));
-r.post('/admin/courses/:id', need('admin'), H((req, res) => {
-  const c = db.prepare(`SELECT c.*, s.template_id FROM courses c JOIN units u ON u.id=c.unit_id JOIN semesters s ON s.id=u.semester_id WHERE c.id=?`).get(Number(req.params.id));
-  db.prepare('UPDATE courses SET name=?, coefficient=?, credits=? WHERE id=?')
+r.post('/admin/courses/:id', need('admin'), H(async (req, res) => {
+  const c = await db.prepare(`SELECT c.*, s.template_id FROM courses c JOIN units u ON u.id=c.unit_id JOIN semesters s ON s.id=u.semester_id WHERE c.id=?`).get(Number(req.params.id));
+  await db.prepare('UPDATE courses SET name=?, coefficient=?, credits=? WHERE id=?')
     .run(String(req.body.name || '').trim() || c.name, asNum(req.body.coefficient) ?? c.coefficient, asNum(req.body.credits) ?? c.credits, c.id);
   res.redirect(url('/admin/modeles/' + c.template_id, { ...req.ctx, ok: 'Matière mise à jour — moyennes recalculées.' }));
 }));
-r.post('/admin/courses/:id/delete', need('admin'), H((req, res) => {
-  const c = db.prepare(`SELECT c.id, s.template_id FROM courses c JOIN units u ON u.id=c.unit_id JOIN semesters s ON s.id=u.semester_id WHERE c.id=?`).get(Number(req.params.id));
-  db.prepare('DELETE FROM courses WHERE id=?').run(c.id);
+r.post('/admin/courses/:id/delete', need('admin'), H(async (req, res) => {
+  const c = await db.prepare(`SELECT c.id, s.template_id FROM courses c JOIN units u ON u.id=c.unit_id JOIN semesters s ON s.id=u.semester_id WHERE c.id=?`).get(Number(req.params.id));
+  await db.prepare('DELETE FROM courses WHERE id=?').run(c.id);
   res.redirect(url('/admin/modeles/' + c.template_id, { ...req.ctx, ok: 'Matière supprimée.' }));
 }));
 
@@ -1175,11 +1178,11 @@ const REF_TABLES = {
   classes: { table: 'classes', cols: [['name', 'Classe']], add: [['name', 'G1']], order: 'name' },
   institutions: { table: 'institutions', cols: [['name', 'Nom'], ['code', 'Code']], add: [['name', 'Université de…'], ['code', 'UNIV']], order: 'name' },
 };
-r.get('/admin/referentiels', need('admin'), H((req, res) => {
-  const o = opts();
-  const block = (key, title) => {
+r.get('/admin/referentiels', need('admin'), H(async (req, res) => {
+  const o = await opts();
+  const block = async (key, title) => {
     const conf = REF_TABLES[key];
-    const rows = db.prepare(`SELECT * FROM ${conf.table} ORDER BY ${conf.order}`).all();
+    const rows = await db.prepare(`SELECT * FROM ${conf.table} ORDER BY ${conf.order}`).all();
     return `<div class="card" style="margin-bottom:12px"><h3 style="margin:0 0 8px;font-size:13px">${title}</h3>
       <table class="tbl"><tbody>${rows.map((row) => { const fid = 'rf' + key + row.id; return `<tr>
         <td>${conf.cols.map(([col, lbl]) => `<input class="input" style="padding:5px 8px;font-size:12.5px;max-width:260px;display:inline-block" name="${col}" value="${esc(row[col] ?? '')}" title="${esc(lbl)}" form="${fid}"/>`).join(' ')}</td>
@@ -1193,10 +1196,10 @@ r.get('/admin/referentiels', need('admin'), H((req, res) => {
         <button class="btn mini" style="width:auto">＋ Ajouter</button></form></div>`;
   };
   const body = `<h1 style="font-size:18px;margin:4px 2px 10px">Référentiels</h1>
-    ${block('years', 'Années universitaires')}
-    ${block('programs', 'Filières')}
-    ${block('levels', 'Niveaux')}
-    ${block('institutions', 'Établissements')}
+    ${await block('years', 'Années universitaires')}
+    ${await block('programs', 'Filières')}
+    ${await block('levels', 'Niveaux')}
+    ${await block('institutions', 'Établissements')}
     <div class="card" style="margin-bottom:12px"><h3 style="margin:0 0 8px;font-size:13px">Classes</h3>
       <table class="tbl"><tbody>${o.classes.map((c) => `<tr><td>${esc(c.name)}</td><td class="tiny muted">${esc(c.p)} · ${esc(c.l)}</td>
       <td class="n"><form method="post" action="${url('/admin/ref/classes/' + c.id + '/delete', req.ctx)}" style="display:inline">${hiddenT(req.ctx.t, { th: req.ctx.th })}<button class="btn mini danger" style="width:auto">✕</button></form></td></tr>`).join('') || '<tr><td class="tiny muted">Aucune classe.</td></tr>'}</tbody></table>
@@ -1207,48 +1210,52 @@ r.get('/admin/referentiels', need('admin'), H((req, res) => {
         <button class="btn mini" style="width:auto">＋ Classe</button></form></div>`;
   res.send(adminPage(req, 'Référentiels', body));
 }));
-r.post('/admin/ref/:key', need('admin'), H((req, res) => {
+r.post('/admin/ref/:key', need('admin'), H(async (req, res) => {
   const conf = REF_TABLES[req.params.key]; if (!conf) throw notFound();
   const cols = [...conf.cols.map(([c]) => c), ...conf.add.map(([c]) => c).filter((c) => !conf.cols.some(([x]) => x === c))];
   const uniq = [...new Set(cols)];
-  db.prepare(`INSERT INTO ${conf.table} (${uniq.join(',')}) VALUES (${uniq.map(() => '?').join(',')})`)
+  await db.prepare(`INSERT INTO ${conf.table} (${uniq.join(',')}) VALUES (${uniq.map(() => '?').join(',')})`)
     .run(...uniq.map((c) => { const v = req.body[c]; return v === '' || v == null ? null : /^-?\d+(\.\d+)?$/.test(String(v).trim()) ? Number(v) : String(v).trim(); }));
   res.redirect(url('/admin/referentiels', { ...req.ctx, ok: 'Ligne ajoutée.' }));
 }));
-r.post('/admin/ref/:key/:id', need('admin'), H((req, res) => {
+r.post('/admin/ref/:key/:id', need('admin'), H(async (req, res) => {
   const conf = REF_TABLES[req.params.key]; if (!conf) throw notFound();
   const sets = conf.cols.map(([c]) => c).filter((c) => req.body[c] !== undefined);
-  if (sets.length) db.prepare(`UPDATE ${conf.table} SET ${sets.map((c) => c + '=?').join(',')} WHERE id=?`)
+  if (sets.length) await db.prepare(`UPDATE ${conf.table} SET ${sets.map((c) => c + '=?').join(',')} WHERE id=?`)
     .run(...sets.map((c) => { const v = req.body[c]; return v === '' || v == null ? null : /^-?\d+(\.\d+)?$/.test(String(v).trim()) ? Number(v) : String(v).trim(); }), Number(req.params.id));
   res.redirect(url('/admin/referentiels', { ...req.ctx, ok: 'Ligne mise à jour.' }));
 }));
-r.post('/admin/ref/years/:id/current', need('admin'), H((req, res) => {
-  tx(() => { db.prepare('UPDATE academic_years SET is_current=0').run(); db.prepare('UPDATE academic_years SET is_current=1 WHERE id=?').run(Number(req.params.id)); });
+r.post('/admin/ref/years/:id/current', need('admin'), H(async (req, res) => {
+  await tx(async () => { await db.prepare('UPDATE academic_years SET is_current=0').run(); await db.prepare('UPDATE academic_years SET is_current=1 WHERE id=?').run(Number(req.params.id)); });
   res.redirect(url('/admin/referentiels', { ...req.ctx, ok: 'Année courante définie.' }));
 }));
-r.post('/admin/ref/:key/:id/delete', need('admin'), H((req, res) => {
+r.post('/admin/ref/:key/:id/delete', need('admin'), H(async (req, res) => {
   const conf = REF_TABLES[req.params.key]; if (!conf) throw notFound();
-  try { db.prepare(`DELETE FROM ${conf.table} WHERE id=?`).run(Number(req.params.id)); } catch { return res.redirect(url('/admin/referentiels', { ...req.ctx, err: 'Suppression impossible : cette ligne est référencée ailleurs.' })); }
+  try { await db.prepare(`DELETE FROM ${conf.table} WHERE id=?`).run(Number(req.params.id)); } catch { return res.redirect(url('/admin/referentiels', { ...req.ctx, err: 'Suppression impossible : cette ligne est référencée ailleurs.' })); }
   res.redirect(url('/admin/referentiels', { ...req.ctx, ok: 'Ligne supprimée.' }));
 }));
 
 /* ------------------------------------------------------------------ */
 /* Import Excel (aperçu confirmation, jamais d'écrasement silencieux) */
 /* ------------------------------------------------------------------ */
-const safePath = (fileId) => {
-  const p = path.join(UPLOAD_DIR, String(fileId).replace(/[^\w.\-]/g, ''));
-  if (!p.startsWith(UPLOAD_DIR) || !fs.existsSync(p)) throw notFound('Fichier import introuvable (ré-uploadez-le)');
-  return p;
+/**
+ * Retrouve le classeur envoyé à l'étape précédente et renvoie son contenu binaire
+ * (il est stocké dans la base, pas sur un disque).
+ */
+const safeFile = async (fileId) => {
+  const fichier = await readUpload(fileId);
+  if (!fichier) throw notFound('Fichier import introuvable (ré-uploadez-le)');
+  return fichier;
 };
 
-r.get('/admin/import', need('admin'), H((req, res) => {
-  const o = opts();
+r.get('/admin/import', need('admin'), H(async (req, res) => {
+  const o = await opts();
   const file = req.query.file ? String(req.query.file) : null;
   let sheetStep = '';
   let analyzeBlock = '';
   if (file) {
     try {
-      const p = safePath(file);
+      const p = (await safeFile(file)).content;
       const wb = readWorkbook(p, { cellFormula: true });
       const sheets = wb.SheetNames.map((name) => {
         const aoa = wb.Sheets[name] ? XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: null }) : [];
@@ -1300,26 +1307,27 @@ r.get('/admin/import', need('admin'), H((req, res) => {
       <p class="tiny muted" style="margin-top:8px">Formats acceptés : .xlsx / .xls (8 Mo max). Ex. : le fichier « Relevé de notes.xlsx » fourni.</p></form>` : sheetStep + analyzeBlock}
     <h3 class="section-title" style="font-size:13px">Journal des imports</h3>
     <div class="card" style="padding:6px 10px;overflow-x:auto"><table class="tbl"><thead><tr><th>Date</th><th>Par</th><th>Résumé</th></tr></thead><tbody>
-      ${db.prepare(`SELECT i.*, u.email FROM imports i LEFT JOIN users u ON u.id=i.user_id ORDER BY i.id DESC LIMIT 20`).all().map((i) =>
+      ${(await db.prepare(`SELECT i.*, u.email FROM imports i LEFT JOIN users u ON u.id=i.user_id ORDER BY i.id DESC LIMIT 20`).all()).map((i) =>
     `<tr><td class="tiny muted">${esc(i.created_at || '')}</td><td class="tiny">${esc(i.email || '')}</td><td class="small">${esc(i.summary || '')}</td></tr>`).join('') || '<tr><td class="tiny muted">Aucun import pour l’instant.</td></tr>'}
     </tbody></table></div>`;
   res.send(adminPage(req, 'Import', body));
 }));
 
-r.post('/admin/import/upload', need('admin'), upload.single('file'), H((req, res) => {
+r.post('/admin/import/upload', need('admin'), upload.single('file'), H(async (req, res) => {
   if (!req.file) return res.redirect(url('/admin/import', { ...req.ctx, err: 'Aucun fichier reçu.' }));
-  res.redirect(url('/admin/import', { t: req.ctx.t, th: req.ctx.th, file: req.file.filename, name: req.file.originalname }));
+  const id = await saveUpload(req.file.originalname, req.file.buffer);
+  res.redirect(url('/admin/import', { t: req.ctx.t, th: req.ctx.th, file: id, name: req.file.originalname }));
 }));
 
-function analyzeImport({ file, sheet, mode, target, mapping, source = 'official' }) {
-  const p = safePath(file);
+async function analyzeImport({ file, sheet, mode, target, mapping, source = 'official' }) {
+  const p = (await safeFile(file)).content;
   if (mode === 'structure') {
     const { rows } = loadSheetCells(p, sheet);
     const parsed = parseReleveStructure(rows);
     if (!parsed.ok) throw badRequest(parsed.error);
     let conflicts = null;
     if (target) {
-      const existing = db.prepare('SELECT COUNT(*) n FROM semesters WHERE template_id=?').get(Number(target)).n;
+      const existing = (await db.prepare('SELECT COUNT(*) n FROM semesters WHERE template_id=?').get(Number(target))).n;
       if (existing > 0) conflicts = `Le modèle cible contient déjà ${existing} semestre(s) : l’import les remplacera (notes conservées si les matières correspondent).`;
     }
     return {
@@ -1332,24 +1340,24 @@ function analyzeImport({ file, sheet, mode, target, mapping, source = 'official'
     };
   }
   if (!target) throw badRequest('Choisissez le modèle de relevé cible');
-  const template = db.prepare('SELECT * FROM templates WHERE id=?').get(Number(target));
+  const template = await db.prepare('SELECT * FROM templates WHERE id=?').get(Number(target));
   if (!template) throw notFound('Modèle introuvable');
-  const tree = loadTemplateTree(template.id);
+  const tree = await loadTemplateTree(template.id);
   const courseIndex = new Map();
   for (const s of tree) for (const u of s.units) for (const c of u.courses) courseIndex.set(normName(c.name), { course: c, semester: s });
   const { aoa } = loadSheetValues(p, sheet);
   const flat = parseFlatGrades(aoa, mapping || {});
-  const studentsByMatricule = new Map(db.prepare('SELECT s.id, s.matricule, u.first_name, u.last_name FROM students s JOIN users u ON u.id=s.user_id').all().map((s) => [normName(s.matricule), s]));
-  const items = flat.rows.map((row) => {
+  const studentsByMatricule = new Map((await db.prepare('SELECT s.id, s.matricule, u.first_name, u.last_name FROM students s JOIN users u ON u.id=s.user_id').all()).map((s) => [normName(s.matricule), s]));
+  const items = (await Promise.all(flat.rows.map(async (row) => {
     const match = courseIndex.get(normName(row.subject));
     const st = row.matricule ? studentsByMatricule.get(normName(row.matricule)) : null;
     let conflict = false;
     if (match && st) {
-      const existing = db.prepare('SELECT normal, rattrapage FROM grades WHERE student_id=? AND course_id=? AND source=?').get(st.id, match.course.id, source);
+      const existing = await db.prepare('SELECT normal, rattrapage FROM grades WHERE student_id=? AND course_id=? AND source=?').get(st.id, match.course.id, source);
       if (existing && (existing.normal != null || existing.rattrapage != null) && (row.normal != null || row.rattrapage != null)) conflict = true;
     }
     return { ...row, matched: !!match && !!st, student: st ? `${st.first_name} ${st.last_name}` : null, conflict };
-  });
+  })));
   const conflicts = items.filter((i) => i.conflict).length;
   return {
     mode, templateName: template.name,
@@ -1363,11 +1371,11 @@ function analyzeImport({ file, sheet, mode, target, mapping, source = 'official'
   };
 }
 
-r.post('/admin/import/analyze', need('admin'), H((req, res) => {
+r.post('/admin/import/analyze', need('admin'), H(async (req, res) => {
   const b = req.body;
   const mapping = {};
   for (const k of ['matricule', 'subject', 'normal', 'rattrapage', 'coefficient', 'credits']) if (String(b['map_' + k] || '').trim()) mapping[k === 'matricule' ? 'matricule' : k] = b['map_' + k];
-  const A = analyzeImport({ file: b.file, sheet: b.sheet, mode: b.mode, target: b.target || null, mapping });
+  const A = await analyzeImport({ file: b.file, sheet: b.sheet, mode: b.mode, target: b.target || null, mapping });
   const body = `<h1 style="font-size:18px;margin:4px 2px 10px">Import — aperçu avant écriture</h1>
     <div class="card"><div class="row spread"><b>${esc(A.headline)}</b>${b.target ? chip(esc(A.templateName || 'modèle cible'), 'violet') : ''}</div>
     ${A.conflicts ? `<div class="banner warn" style="margin-top:8px">${esc(A.conflicts)}</div>` : ''}
@@ -1388,51 +1396,51 @@ r.post('/admin/import/analyze', need('admin'), H((req, res) => {
   res.send(adminPage(req, 'Import', body));
 }));
 
-r.post('/admin/import/commit', need('admin'), H((req, res) => {
+r.post('/admin/import/commit', need('admin'), H(async (req, res) => {
   if (req.body.confirm !== '1') return res.redirect(url('/admin/import', { ...req.ctx, err: 'Confirmation requise pour écrire dans la base.' }));
   const b = req.body;
   const onConflict = b.onConflict === 'skip' ? 'skip' : 'overwrite';
-  const p = safePath(b.file);
+  const p = (await safeFile(b.file)).content;
   let summary = '';
   if (b.mode === 'structure') {
     if (!b.target) throw badRequest('Modèle cible requis');
     const templateId = Number(b.target);
-    const nSem = db.prepare('SELECT COUNT(*) n FROM semesters WHERE template_id=?').get(templateId).n;
+    const nSem = (await db.prepare('SELECT COUNT(*) n FROM semesters WHERE template_id=?').get(templateId)).n;
     if (nSem > 0 && onConflict !== 'overwrite') throw new ApiError(409, 'Le modèle contient déjà une structure : relancez avec « écraser » confirmé.');
     const { rows } = loadSheetCells(p, b.sheet);
     const parsed = parseReleveStructure(rows);
     if (!parsed.ok) throw badRequest(parsed.error);
-    tx(() => {
-      if (nSem > 0) db.prepare('DELETE FROM semesters WHERE template_id=?').run(templateId);
+    await tx(async () => {
+      if (nSem > 0) await db.prepare('DELETE FROM semesters WHERE template_id=?').run(templateId);
       let sOrd = 0;
       for (const s of parsed.semesters) {
-        const si = db.prepare('INSERT INTO semesters (template_id,number,name,ects_expected,ord) VALUES (?,?,?,?,?)')
-          .run(templateId, s.number, s.name || `Semestre ${s.number}`, s.ects || 30, sOrd++).lastInsertRowid;
+        const si = (await db.prepare('INSERT INTO semesters (template_id,number,name,ects_expected,ord) VALUES (?,?,?,?,?)')
+          .run(templateId, s.number, s.name || `Semestre ${s.number}`, s.ects || 30, sOrd++)).lastInsertRowid;
         let uOrd = 0;
         for (const u of s.units) {
-          const ui = db.prepare('INSERT INTO units (semester_id,code,name,ord) VALUES (?,?,?,?)').run(si, u.code, u.name, uOrd++).lastInsertRowid;
+          const ui = (await db.prepare('INSERT INTO units (semester_id,code,name,ord) VALUES (?,?,?,?)').run(si, u.code, u.name, uOrd++)).lastInsertRowid;
           let cOrd = 0;
-          for (const c of u.courses) db.prepare('INSERT INTO courses (unit_id,name,coefficient,credits,ord) VALUES (?,?,?,?,?)').run(ui, c.name, c.coefficient ?? 1, c.credits ?? 1, cOrd++);
+          for (const c of u.courses) await db.prepare('INSERT INTO courses (unit_id,name,coefficient,credits,ord) VALUES (?,?,?,?,?)').run(ui, c.name, c.coefficient ?? 1, c.credits ?? 1, cOrd++);
         }
       }
-      db.prepare(`UPDATE templates SET updated_at=datetime('now') WHERE id=?`).run(templateId);
-      db.prepare('INSERT INTO imports (user_id,filename,mode,summary,rows_affected) VALUES (?,?,?,?,?)').run(req.user.id, b.file, 'structure', `Structure importée dans le modèle #${templateId} : ${parsed.semesters.length} semestre(s)`, parsed.semesters.length);
+      await db.prepare(`UPDATE templates SET updated_at=datetime('now') WHERE id=?`).run(templateId);
+      await db.prepare('INSERT INTO imports (user_id,filename,mode,summary,rows_affected) VALUES (?,?,?,?,?)').run(req.user.id, b.file, 'structure', `Structure importée dans le modèle #${templateId} : ${parsed.semesters.length} semestre(s)`, parsed.semesters.length);
     });
     summary = `Structure importée dans le modèle #${templateId} : ${parsed.semesters.length} semestre(s)`;
   } else {
-    const template = db.prepare('SELECT * FROM templates WHERE id=?').get(Number(b.target));
+    const template = await db.prepare('SELECT * FROM templates WHERE id=?').get(Number(b.target));
     if (!template) throw notFound('Modèle introuvable');
     const source = 'official';
-    const tree = loadTemplateTree(template.id);
+    const tree = await loadTemplateTree(template.id);
     const courseIndex = new Map();
     for (const s of tree) for (const u of s.units) for (const c of u.courses) courseIndex.set(normName(c.name), { course: c, semester: s });
-    const studentsByMatricule = new Map(db.prepare('SELECT id, matricule FROM students').all().map((s) => [normName(s.matricule), s]));
+    const studentsByMatricule = new Map((await db.prepare('SELECT id, matricule FROM students').all()).map((s) => [normName(s.matricule), s]));
     const mapping = {};
     for (const k of ['matricule', 'subject', 'normal', 'rattrapage', 'coefficient', 'credits']) if (String(b['map_' + k] || '').trim()) mapping[k] = b['map_' + k];
     const { aoa } = loadSheetValues(p, b.sheet);
     const flat = parseFlatGrades(aoa, mapping);
     let written = 0, skipped = 0, unmatched = 0, createdCourses = 0;
-    tx(() => {
+    await tx(async () => {
       for (const row of flat.rows) {
         let match = courseIndex.get(normName(row.subject));
         const st = row.matricule ? studentsByMatricule.get(normName(row.matricule)) : null;
@@ -1441,63 +1449,64 @@ r.post('/admin/import/commit', need('admin'), H((req, res) => {
           if (!b.createMissingCourses) { unmatched++; continue; }
           const firstSem = tree[0]; const firstUe = firstSem?.units[0];
           if (!firstUe) { unmatched++; continue; }
-          const cid = db.prepare('INSERT INTO courses (unit_id,name,coefficient,credits,ord) VALUES (?,?,?,?,?)').run(firstUe.id, row.subject, row.coefficient ?? 1, row.credits ?? 1, 999).lastInsertRowid;
+          const cid = (await db.prepare('INSERT INTO courses (unit_id,name,coefficient,credits,ord) VALUES (?,?,?,?,?)').run(firstUe.id, row.subject, row.coefficient ?? 1, row.credits ?? 1, 999)).lastInsertRowid;
           match = { course: { id: cid }, semester: firstSem };
           courseIndex.set(normName(row.subject), match);
           createdCourses++;
         }
-        const pub = db.prepare('SELECT status FROM publications WHERE semester_id=?').get(match.semester.id);
+        const pub = await db.prepare('SELECT status FROM publications WHERE semester_id=?').get(match.semester.id);
         if (pub?.status === 'locked') { skipped++; continue; }
-        const existing = db.prepare('SELECT normal, rattrapage FROM grades WHERE student_id=? AND course_id=? AND source=?').get(st.id, match.course.id, source);
+        const existing = await db.prepare('SELECT normal, rattrapage FROM grades WHERE student_id=? AND course_id=? AND source=?').get(st.id, match.course.id, source);
         if (existing && (existing.normal != null || existing.rattrapage != null) && onConflict !== 'overwrite') { skipped++; continue; }
-        db.prepare(`INSERT INTO grades (student_id,course_id,source,normal,rattrapage,updated_at) VALUES (?,?,?, ?,?,datetime('now'))
+        await db.prepare(`INSERT INTO grades (student_id,course_id,source,normal,rattrapage,updated_at) VALUES (?,?,?, ?,?,datetime('now'))
           ON CONFLICT(student_id,course_id,source) DO UPDATE SET normal=excluded.normal, rattrapage=excluded.rattrapage, updated_at=datetime('now')`)
           .run(st.id, match.course.id, source, row.normal, row.rattrapage);
         written++;
       }
-      db.prepare('INSERT INTO imports (user_id,filename,mode,summary,rows_affected) VALUES (?,?,?,?,?)').run(req.user.id, b.file, 'grades', `Import ${source} : ${written} écritures, ${skipped} ignorées, ${unmatched} sans correspondance, ${createdCourses} matières créées`, written);
+      await db.prepare('INSERT INTO imports (user_id,filename,mode,summary,rows_affected) VALUES (?,?,?,?,?)').run(req.user.id, b.file, 'grades', `Import ${source} : ${written} écritures, ${skipped} ignorées, ${unmatched} sans correspondance, ${createdCourses} matières créées`, written);
     });
     summary = `${written} note(s) importée(s) · ${skipped} ignorée(s) · ${unmatched} sans correspondance · ${createdCourses} matière(s) créée(s)`;
   }
+  await dropUpload(b.file);                       /* import terminé : le classeur n'a plus à rester stocké */
   res.redirect(url('/admin/import', { t: req.ctx.t, th: req.ctx.th, ok: summary }));
 }));
 
 /* — Fichiers d'export (admin) + divers — */
-r.get('/admin/fichiers/etudiants.csv', need('admin'), H((_req, res) => {
-  const rows = db.prepare(`SELECT s.matricule, u.last_name, u.first_name, u.email, p.name AS program, l.name AS level, c.name AS class, y.label AS year
+r.get('/admin/fichiers/etudiants.csv', need('admin'), H(async (_req, res) => {
+  const rows = await db.prepare(`SELECT s.matricule, u.last_name, u.first_name, u.email, p.name AS program, l.name AS level, c.name AS class, y.label AS year
     FROM students s JOIN users u ON u.id=s.user_id LEFT JOIN programs p ON p.id=s.program_id
     LEFT JOIN levels l ON l.id=s.level_id LEFT JOIN classes c ON c.id=s.class_id LEFT JOIN academic_years y ON y.id=s.academic_year_id ORDER BY u.last_name`).all();
   sendCsv(res, 'etudiants.csv', csv(rows, ['matricule', 'last_name', 'first_name', 'email', 'program', 'level', 'class', 'year']));
 }));
-r.get('/admin/fichiers/modele/:id.csv', need('admin'), H((req, res) => {
-  const t = db.prepare('SELECT * FROM templates WHERE id=?').get(Number(req.params.id));
+r.get('/admin/fichiers/modele/:id.csv', need('admin'), H(async (req, res) => {
+  const t = await db.prepare('SELECT * FROM templates WHERE id=?').get(Number(req.params.id));
   if (!t) throw notFound();
   const rows = [];
-  for (const s of loadTemplateTree(t.id)) for (const u of s.units) for (const c of u.courses) rows.push({ semestre: s.name, ue: u.code, matiere: c.name, coefficient: c.coefficient, credits: c.credits });
+  for (const s of await loadTemplateTree(t.id)) for (const u of s.units) for (const c of u.courses) rows.push({ semestre: s.name, ue: u.code, matiere: c.name, coefficient: c.coefficient, credits: c.credits });
   sendCsv(res, `modele-${t.id}.csv`, csv(rows, ['semestre', 'ue', 'matiere', 'coefficient', 'credits']));
 }));
 r.get('/admin/fichiers/releve/:id.pdf', need('admin'), H(async (req, res) => {
-  const st = db.prepare('SELECT * FROM students WHERE id=?').get(+req.params.id);
+  const st = await db.prepare('SELECT * FROM students WHERE id=?').get(+req.params.id);
   if (!st) throw notFound('Étudiant introuvable');
   await sendRelevePdf(res, st, req.query.source === 'personal' ? 'personal' : 'official', { allAccess: true });
 }));
 
-r.get('/admin/fichiers/releve/:id.xlsx', need('admin'), H((req, res) => {
-  const s = db.prepare('SELECT * FROM students WHERE id=?').get(Number(req.params.id));
+r.get('/admin/fichiers/releve/:id.xlsx', need('admin'), H(async (req, res) => {
+  const s = await db.prepare('SELECT * FROM students WHERE id=?').get(Number(req.params.id));
   if (!s) throw notFound();
-  sendReleveXlsx(res, s, req.query.source === 'personal' ? 'personal' : 'official');
+  await sendReleveXlsx(res, s, req.query.source === 'personal' ? 'personal' : 'official');
 }));
 
 /* ---- Admin — emploi du temps par classe et semestre (CRUD simple, PRG) ---- */
-r.get('/admin/emploi', need('admin'), H((req, res) => {
-  const classes = db.prepare('SELECT id, name FROM classes ORDER BY id').all();
-  const sems = db.prepare('SELECT s.id, s.number, s.name, t.name AS tname FROM semesters s JOIN templates t ON t.id = s.template_id ORDER BY s.id').all();
+r.get('/admin/emploi', need('admin'), H(async (req, res) => {
+  const classes = await db.prepare('SELECT id, name FROM classes ORDER BY id').all();
+  const sems = await db.prepare('SELECT s.id, s.number, s.name, t.name AS tname FROM semesters s JOIN templates t ON t.id = s.template_id ORDER BY s.id').all();
   const clazz = Number(req.query.clazz) || classes[0]?.id;
   const sem = Number(req.query.sem) || sems.find((x) => x.id > 0)?.id;
   if (!classes.length || !sems.length) { res.send(adminPage(req, 'Calendrier', '<div class="empty">Créez d’abord une classe et un modèle de relevé.</div>')); return; }
-  const rows = db.prepare(`SELECT sl.*, c.name AS cname FROM schedule_slots sl LEFT JOIN courses c ON c.id = sl.course_id
+  const rows = await db.prepare(`SELECT sl.*, c.name AS cname FROM schedule_slots sl LEFT JOIN courses c ON c.id = sl.course_id
     WHERE sl.class_id = ? AND sl.semester_id = ? ORDER BY sl.day, sl.start`).all(clazz, sem);
-  const courses = db.prepare(`SELECT c.id, c.name, un.code AS ucode FROM courses c JOIN units un ON c.unit_id = un.id
+  const courses = await db.prepare(`SELECT c.id, c.name, un.code AS ucode FROM courses c JOIN units un ON c.unit_id = un.id
     WHERE un.semester_id = ? ORDER BY c.id`).all(sem);
   const cn = classes.find((c) => c.id === clazz);
   const sn = sems.find((x) => x.id === sem);
@@ -1525,7 +1534,7 @@ r.get('/admin/emploi', need('admin'), H((req, res) => {
   res.send(adminPage(req, 'Calendrier', `<h1 style="font-size:18px;margin:4px 2px 10px">Emploi du temps</h1>${filter}${table}${form}`));
 }));
 
-r.post('/admin/emploi/add', need('admin'), H((req, res) => {
+r.post('/admin/emploi/add', need('admin'), H(async (req, res) => {
   const clazz = Number(req.body.clazz); const sem = Number(req.body.sem); const day = Number(req.body.day);
   const start = String(req.body.start || ''); const end = String(req.body.end || '');
   if (!clazz || !sem) throw badRequest('Classe et semestre requis');
@@ -1533,22 +1542,22 @@ r.post('/admin/emploi/add', need('admin'), H((req, res) => {
   if (!/^\d{2}:\d{2}$/.test(start) || !/^\d{2}:\d{2}$/.test(end) || end <= start) throw badRequest('Horaires invalides : format HH:MM, fin après début');
   const courseId = req.body.course_id ? Number(req.body.course_id) : null;
   if (courseId) {
-    const ok = db.prepare('SELECT c.id FROM courses c JOIN units u ON c.unit_id = u.id WHERE c.id = ? AND u.semester_id = ?').get(courseId, sem);
+    const ok = await db.prepare('SELECT c.id FROM courses c JOIN units u ON c.unit_id = u.id WHERE c.id = ? AND u.semester_id = ?').get(courseId, sem);
     if (!ok) throw badRequest('Matière inconnue pour ce semestre');
   }
   const title = courseId ? null : String(req.body.title || '').trim().slice(0, 120);
   if (!courseId && !title) throw badRequest('Choisissez une matière ou saisissez un intitulé libre');
   const room = String(req.body.room || '').trim().slice(0, 60) || null;
-  db.prepare('INSERT INTO schedule_slots (class_id, semester_id, course_id, title, day, start, end, room) VALUES (?,?,?,?,?,?,?,?)')
+  await db.prepare('INSERT INTO schedule_slots (class_id, semester_id, course_id, title, day, start, end, room) VALUES (?,?,?,?,?,?,?,?)')
     .run(clazz, sem, courseId, title, day, start, end, room);
   res.redirect(url('/admin/emploi', { ...req.ctx, clazz, sem, ok: 'Créneau ajouté' }));
 }));
 
-r.post('/admin/emploi/del', need('admin'), H((req, res) => {
+r.post('/admin/emploi/del', need('admin'), H(async (req, res) => {
   const id = Number(req.body.id); const clazz = Number(req.body.clazz); const sem = Number(req.body.sem);
-  const rw = db.prepare('SELECT id FROM schedule_slots WHERE id = ?').get(id);
+  const rw = await db.prepare('SELECT id FROM schedule_slots WHERE id = ?').get(id);
   if (!rw) throw notFound('Créneau introuvable');
-  db.prepare('DELETE FROM schedule_slots WHERE id = ?').run(id);
+  await db.prepare('DELETE FROM schedule_slots WHERE id = ?').run(id);
   res.redirect(url('/admin/emploi', { ...req.ctx, clazz, sem, ok: 'Créneau supprimé' }));
 }));
 
