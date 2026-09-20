@@ -75,20 +75,39 @@ main.wide { padding: 24px 24px 64px; }
 .section-title { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; margin: 26px 2px 12px; padding-top: 6px; }
 .section-title h2, .section-title h3 { display: flex; align-items: center; gap: 8px; }
 
-/* ---------- barre supérieure (header « scrolled » du portfolio) ---------- */
+/* ---------- barre supérieure — Frame-115 : avatar, nom centré et fond en aplât ---------- */
 .topbar {
   position: sticky; top: 0; z-index: 30;
-  background: color-mix(in srgb, var(--bg) 92%, transparent);
-  backdrop-filter: blur(8px);
-  border-bottom: 0;
-  padding: calc(14px + env(safe-area-inset-top)) 16px 12px;
-  display: flex; align-items: center; gap: 10px; min-height: 56px;
+  width: 100%; height: calc(100px + env(safe-area-inset-top)); min-height: 100px;
+  padding: calc(16px + env(safe-area-inset-top)) 24px 14px;
+  display: flex; align-items: center; justify-content: center;
+  background: #fff; color: #161513;
+  border: 0; border-radius: 0 0 25px 25px;
+  box-shadow: none;
 }
+[data-theme="dark"] .topbar { background: #1E1C19; color: #F2E9D8; }
+.topbar-user { position: relative; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+.topbar-identity { position: relative; display: flex; align-items: center; justify-content: center; width: 100%; min-height: 48px; color: inherit; text-decoration: none; }
+.topbar-avatar { position: absolute; left: 24px; top: 50%; transform: translateY(-50%); width: 30px; height: 30px; color: currentColor; display: grid; place-items: center; }
+.topbar-avatar svg { display: block; width: 30px; height: 30px; fill: currentColor; }
+.topbar-copy { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0; line-height: 1.08; text-align: center; }
+.topbar-greeting { font-size: 1.35rem; font-weight: 700; letter-spacing: -0.04em; }
+.topbar-name { font-size: 1rem; font-weight: 700; letter-spacing: -0.02em; }
+.topbar-page .topbar-name { font-size: 1.35rem; }
+.topbar-tools { position: absolute; right: 24px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; gap: 2px; }
 .topbar .brand { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 1.05rem; text-transform: uppercase; letter-spacing: -0.02em; }
 .logo-dot { width: 30px; height: 30px; border-radius: 6px; background: var(--accent); display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 13px; text-transform: uppercase; flex: none; }
 .topbar .spacer { flex: 1; }
-.icon-btn { border: 1px solid transparent; background: var(--surface); color: var(--text); width: 36px; height: 36px; border-radius: 999px; display: grid; place-items: center; transition: all 0.2s; }
-.icon-btn:hover { border-color: var(--accent); color: var(--accent); }
+.icon-btn { border: 0; background: transparent; color: inherit; width: 32px; height: 32px; border-radius: 999px; display: grid; place-items: center; transition: color 0.2s, background 0.2s; }
+.icon-btn:hover, .icon-btn:focus-visible { background: color-mix(in srgb, currentColor 10%, transparent); color: var(--accent); outline: none; }
+.topbar-auth { height: 56px; min-height: 56px; padding: calc(10px + env(safe-area-inset-top)) 16px 10px; border-radius: 0; justify-content: flex-start; }
+.topbar-auth .topbar-tools { right: 16px; }
+@media (max-width: 420px) {
+  .topbar { padding-left: 20px; padding-right: 20px; }
+  .topbar-avatar { left: 20px; }
+  .topbar-tools { right: 14px; }
+  .topbar-greeting, .topbar-page .topbar-name { font-size: 1.2rem; }
+}
 
 /* ---------- barre étudiante — Frame-109 : quatre onglets et bouton central « message » ---------- */
 .tabbar {

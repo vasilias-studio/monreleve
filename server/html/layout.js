@@ -65,19 +65,20 @@ const ICONS = {
 export function page(ctx, { title = 'MonRelevé', body = '', tabs = null, adminTab = null, bare = false } = {}) {
   const th = ctx.th;
   const themeAttr = th === 'dark' || th === 'light' ? ` data-theme="${th}"` : '';
-  const toggleHref = url(ctx.pathname || '/', { t: ctx.t, th: th === 'dark' ? 'light' : 'dark' });
-  const logoutHref = url('/deconnexion', { t: ctx.t });
-
-  const topbar = `<header class="topbar">
-      <div class="brand">${(() => {
-        const who = ctx.user;
-        if (!who) return '<span class="logo-dot">MR</span> MonRelevé';
-        const initials = ((who.first_name || '?')[0] + ((who.last_name || ' ')[0] || ' ')).toUpperCase();
-        const href = url(who.role === 'admin' ? '/admin' : '/profil', { t: ctx.t, th });
-        return `<a class="identity" href="${href}" title="Mon profil" style="text-decoration:none;color:inherit"><span class="avatar sm">${esc(initials)}</span><b>${esc(`${who.first_name} ${who.last_name}`.trim())}</b></a>${adminTab ? ' <span class="chip violet" style="margin-left:8px">Admin</span>' : ''}`;
-      })()}</div>
-      <div class="spacer"></div>
-      ${bare ? '' : `<a class="icon-btn" href="${toggleHref}" title="Thème clair / sombre" style="text-decoration:none">${th === 'dark' ? '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>' : '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>'}</a>${ctx.t ? `<a class="icon-btn" href="${logoutHref}" title="Se déconnecter" aria-label="Se déconnecter" style="text-decoration:none"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="M10 17l5-5-5-5"/><path d="M15 12H3"/></svg></a>` : ''}`}
+  const toggleHref = url(ctx.pathname || '/', { th: th === 'dark' ? 'light' : 'dark' });
+  const logoutHref = url('/deconnexion', { th });
+  const isStudentHome = Boolean(ctx.user && !bare && !adminTab && (ctx.pathname || '') === '/accueil');
+  const topbarUserIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="7.5" r="4.5"/><path d="M3.2 20.4c.7-4.2 4-6.8 8.8-6.8s8.1 2.6 8.8 6.8c.1.6-.4 1.1-1 1.1H4.2c-.6 0-1.1-.5-1-1.1Z"/></svg>';
+  const topbar = `<header class="topbar${bare ? ' topbar-auth' : ''}${isStudentHome ? ' topbar-home' : ' topbar-page'}">
+      ${ctx.user ? `<div class="topbar-user">
+        <a class="topbar-identity" href="${url(ctx.user.role === 'admin' ? '/admin' : '/profil', { th })}" title="Mon profil" aria-label="Mon profil">
+          <span class="topbar-avatar">${topbarUserIcon}</span>
+          <span class="topbar-copy">${isStudentHome ? '<b class="topbar-greeting">Bonjour</b>' : ''}<b class="topbar-name">${esc(ctx.user.first_name || ctx.user.last_name || 'Profil')}</b></span>
+        </a>
+      </div>` : '<div class="brand guest"><span class="logo-dot">MR</span> MonRelevé</div>'}
+      <div class="topbar-tools">
+        ${bare ? '' : `<a class="icon-btn" href="${toggleHref}" title="Thème clair / sombre" aria-label="Thème clair / sombre" style="text-decoration:none">${th === 'dark' ? '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>' : '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>'}</a>${ctx.user ? `<a class="icon-btn" href="${logoutHref}" title="Se déconnecter" aria-label="Se déconnecter" style="text-decoration:none"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="M10 17l5-5-5-5"/><path d="M15 12H3"/></svg></a>` : ''}`}
+      </div>
     </header>`;
 
   /* Barre étudiante inspirée de Frame-109 : quatre onglets autour d'un bouton central fixe

@@ -123,6 +123,10 @@ for (const chemin of ['/accueil', '/saisie', '/releve', '/calendrier?weeks=2', '
     verifier('formulaire de message présent', /name="subject"/.test(r.texte) && /name="body"/.test(r.texte));
   }
 }
+const enteteAccueil = await appel('/accueil', { cookie: cookieEtudiant });
+verifier('barre Frame-115 sur l accueil', /topbar-home/.test(enteteAccueil.texte) && /topbar-avatar/.test(enteteAccueil.texte) && /Bonjour/.test(enteteAccueil.texte));
+const enteteSombre = await appel('/accueil?th=dark', { cookie: cookieEtudiant });
+verifier('barre Frame-115 en mode sombre', /<html[^>]+data-theme="dark"/.test(enteteSombre.texte) && /topbar-home/.test(enteteSombre.texte));
 const releveEtudiant = await appel('/releve', { cookie: cookieEtudiant });
 verifier('relevé : moyenne calculée présente',
   /<b>\d{1,2}([.,]\d{1,2})?\s*\/\s*20<\/b>|moyenne/i.test(releveEtudiant.texte));
