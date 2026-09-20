@@ -39,9 +39,19 @@ const compter = async (table) => {
 
 console.log(`\nConnexion à PostgreSQL… (pilote ${db.driver})`);
 
+async function ensureScheduleDateColumn() {
+  try {
+    await db.exec('ALTER TABLE schedule_slots ADD COLUMN slot_date TEXT');
+  } catch (e) {
+    if (!/duplicate column|already exists/i.test(String(e?.message || e))) throw e;
+  }
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_slots_date ON schedule_slots(class_id, slot_date, start)');
+}
+
 if (action === 'schema' || action === 'seed') {
   console.log('· création du schéma (tables, index, contraintes)…');
   await db.exec(db.schema.postgres);
+  await ensureScheduleDateColumn();
   const tables = await db.prepare(`SELECT table_name AS nom FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name`).all();
   console.log(`  ${tables.length} table(s) en place : ${tables.map((t) => t.nom).join(', ')}`);
 }
