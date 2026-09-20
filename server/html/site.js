@@ -18,6 +18,7 @@ import { liveCalcScript } from './engine.js';
 import { buildRelevePdf } from '../pdfReleve.js';
 import { feed, likedIds, toggleLike, audienceLabel, relTime, initialsOf } from '../annonces.js';
 import { saveUpload, readUpload, dropUpload, TAILLE_MAX } from '../uploads.js';
+import { resolveAcademicClass } from '../academic.js';
 
 /* ---- calcul en direct (aperçu Excel) : config sérialisée pour le moteur inliné ---- */
 const liveTree = (semesters) => semesters.map((s) => ({
@@ -110,7 +111,6 @@ const opts = async () => ({
   programs: await db.prepare('SELECT id, name FROM programs WHERE active=1 ORDER BY name').all(),
   levels: await db.prepare('SELECT id, name FROM levels ORDER BY ord, name').all(),
   years: await db.prepare('SELECT id, label FROM academic_years ORDER BY start_year DESC').all(),
-  classes: await db.prepare(`SELECT c.id, c.name, p.name AS p, l.name AS l FROM classes c JOIN programs p ON p.id=c.program_id JOIN levels l ON l.id=c.level_id ORDER BY c.name`).all(),
   templates: await db.prepare('SELECT t.id, t.name FROM templates t ORDER BY t.id DESC').all(),
 });
 const select = (name, rows, sel, extra = '') => `<select name="${name}" class="input" ${extra}>${rows.map((o) => `<option value="${o.id}" ${String(sel) === String(o.id) ? 'selected' : ''}>${esc(o.name ?? o.label ?? o.p + ' · ' + o.l)}</option>`).join('')}</select>`;
@@ -284,7 +284,7 @@ const stuPage = (req, title, body) => page(req.ctx, { title, body, tabs: STU_TAB
 /* ------------------------------------------------------------------ */
 /* Accueil = fil d'annonces (« publications ») de l'administration        */
 /* ------------------------------------------------------------------ */
-const CIBLE_TXT = { all: 'Tous les étudiants', program: 'Une filière', class: 'Une classe' };
+const CIBLE_TXT = { all: 'Tous les étudiants', program: 'Une filière' };
 
 /** Carte d'une annonce : avatar, auteur, date relative, cible, texte, « J'aime », modération admin. */
 async function annonceCard(a, { ctx, liked = false, mine = false, admin = false }) {
@@ -312,22 +312,19 @@ async function annonceCard(a, { ctx, liked = false, mine = false, admin = false 
   </article>`;
 }
 
-/** Composeur d'annonce (administration) : texte + cible (tous / filière / classe) + épinglage. */
+/** Composeur d'annonce (administration) : texte + cible (tous / filière) + épinglage. */
 async function composer(req) {
   const o = await opts();
   const prog = o.programs.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
-  const klass = o.classes.map((c) => `<option value="${c.id}">${esc(c.name)} (${esc(c.p)} · ${esc(c.l)})</option>`).join('');
   const h = hiddenT(req.ctx.t, { th: req.ctx.th });
   return `<form class="composer" method="post" action="${url('/accueil/annonces', req.ctx)}">${h}
     <textarea class="input" name="body" rows="3" maxlength="2000" placeholder="Quoi de neuf ? Écrivez une annonce pour les étudiants…" required></textarea>
     <div class="composer-row">
-      <select class="input" name="audience" id="ann-audience" onchange="document.getElementById('ann-prog').hidden = this.value !== 'program'; document.getElementById('ann-class').hidden = this.value !== 'class';">
+      <select class="input" name="audience" id="ann-audience" onchange="document.getElementById('ann-prog').hidden = this.value !== 'program';">
         <option value="all">Tous les étudiants</option>
         <option value="program">Une filière</option>
-        <option value="class">Une classe</option>
       </select>
       <select class="input" name="program_id" id="ann-prog" hidden>${prog}</select>
-      <select class="input" name="class_id" id="ann-class" hidden>${klass}</select>
       <label class="tiny muted" style="display:flex;align-items:center;gap:6px"><input type="checkbox" name="pinned" value="1" /> Épingler en haut</label>
       <button class="btn sm" style="width:auto">Publier</button>
     </div>
@@ -362,18 +359,14 @@ r.post('/accueil/annonces', need('admin'), H(async (req, res) => {
   const fail = (m) => res.redirect(303, url('/accueil', { ...req.ctx, err: m }));
   const text = String(req.body.body || '').trim();
   if (!text) return fail('Annonce vide : écrivez un texte.');
-  const audience = ['all', 'program', 'class'].includes(req.body.audience) ? req.body.audience : 'all';
-  let programId = null, classId = null;
+  const audience = ['all', 'program'].includes(req.body.audience) ? req.body.audience : 'all';
+  let programId = null;
   if (audience === 'program') {
     programId = asNum(req.body.program_id);
     if (!programId || !await db.prepare('SELECT id FROM programs WHERE id=?').get(programId)) return fail('Choisissez une filière valide.');
   }
-  if (audience === 'class') {
-    classId = asNum(req.body.class_id);
-    if (!classId || !await db.prepare('SELECT id FROM classes WHERE id=?').get(classId)) return fail('Choisissez une classe valide.');
-  }
   await db.prepare('INSERT INTO announcements (author_id, body, audience, program_id, class_id, pinned) VALUES (?,?,?,?,?,?)')
-    .run(req.user.id, text.slice(0, 2000), audience, programId, classId, req.body.pinned ? 1 : 0);
+    .run(req.user.id, text.slice(0, 2000), audience, programId, null, req.body.pinned ? 1 : 0);
   res.redirect(303, url('/accueil', { ...req.ctx, ok: 'Annonce publiée.' }));
 }));
 
@@ -537,9 +530,8 @@ async function sendRelevePdf(res, stud, source, { allAccess = false } = {}) {
   if (official && !allAccess && !sems.length) throw badRequest('Aucun résultat officiel publié pour l’instant');
   const tot = official ? d.official : d.personal;
   const u = await db.prepare('SELECT first_name, last_name, email FROM users WHERE id=?').get(stud.user_id);
-  const cls = stud.class_id ? await db.prepare('SELECT name FROM classes WHERE id=?').get(stud.class_id) : null;
   const pdf = await buildRelevePdf({
-    student: { ...stud, class_name: cls?.name }, user: u, template: d.template,
+    student: stud, user: u, template: d.template,
     sems, tot, source: official ? 'official' : 'personal', pubs: d.pubs,
   });
   res.setHeader('Content-Type', 'application/pdf');
@@ -637,7 +629,6 @@ r.get('/calendrier', need('student'), H(async (req, res) => {
       <a class="carrow prec" href="${prev}" title="Jour précédent" aria-label="Jour précédent"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 5.5 8 12l6.5 6.5"/></svg></a>
       <a class="carrow suiv" href="${next}" title="Jour suivant" aria-label="Jour suivant"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 5.5 16 12l-6.5 6.5"/></svg></a>
     </div></div>
-    ${classId ? '' : '<div class="banner warn" style="margin:0 0 33px">Votre compte n’est rattaché à aucune classe : voyez l’administration.</div>'}
     <div class="calweeks">${boxes}</div>
     ${nW > 1 ? '<p class="tiny muted calborne" hidden>Borne de la copie statique — l’application permet d’aller au-delà.</p>' : ''}
   </section>
@@ -705,10 +696,7 @@ r.get('/profil', need('student'), H(async (req, res) => {
         <div class="field"><label>Filière</label>${select('program_id', o.programs, s.program_id)}</div>
         <div class="field"><label>Niveau</label>${select('level_id', o.levels, s.level_id)}</div>
       </div>
-      <div class="grid" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-        <div class="field"><label>Classe</label><select name="class_id" class="input"><option value="">—</option>${o.classes.map((c) => `<option value="${c.id}" ${String(s.class_id) === String(c.id) ? 'selected' : ''}>${esc(c.name)} (${esc(c.p)} · ${esc(c.l)})</option>`).join('')}</select></div>
-        <div class="field"><label>Année universitaire</label>${select('academic_year_id', o.years.map((y) => ({ ...y, name: y.label })), s.academic_year_id)}</div>
-      </div>
+      <div class="field"><label>Année universitaire</label>${select('academic_year_id', o.years.map((y) => ({ ...y, name: y.label })), s.academic_year_id)}</div>
       <button class="btn sm">Mettre à jour ma scolarité</button>
     </form>
     <h3 class="section-title" style="font-size:13px">Identité</h3>
@@ -732,8 +720,12 @@ r.get('/profil', need('student'), H(async (req, res) => {
 }));
 r.post('/profil/enrollment', need('student'), H(async (req, res) => {
   const s = await student(req);
+  const programId = asNum(req.body.program_id);
+  const levelId = asNum(req.body.level_id);
+  const yearId = asNum(req.body.academic_year_id) ?? null;
+  const academicClass = await resolveAcademicClass(programId, levelId, yearId);
   await db.prepare('UPDATE students SET program_id=?, level_id=?, class_id=?, academic_year_id=? WHERE id=?')
-    .run(asNum(req.body.program_id), asNum(req.body.level_id), asNum(req.body.class_id) ?? null, asNum(req.body.academic_year_id) ?? null, s.id);
+    .run(programId, levelId, academicClass?.id ?? null, yearId, s.id);
   res.redirect(303, url('/profil', { ...req.ctx, ok: 'Scolarité mise à jour.' }));
 }));
 r.post('/profil/names', need('student'), H(async (req, res) => {
@@ -787,11 +779,11 @@ r.get('/admin', need('admin'), H(async (req, res) => {
 
 /* — Étudiants — */
 const studentSelect = `SELECT s.id, s.matricule, s.program_id, s.level_id, s.class_id, s.academic_year_id, s.created_at,
-    u.id AS user_id, u.email, u.is_active, u.first_name, u.last_name,
-    p.name AS program, l.name AS level, c.name AS class, y.label AS year
+         u.id AS user_id, u.email, u.is_active, u.first_name, u.last_name,
+         p.name AS program, l.name AS level, y.label AS year
   FROM students s JOIN users u ON u.id=s.user_id
   LEFT JOIN programs p ON p.id=s.program_id LEFT JOIN levels l ON l.id=s.level_id
-  LEFT JOIN classes c ON c.id=s.class_id LEFT JOIN academic_years y ON y.id=s.academic_year_id`;
+  LEFT JOIN academic_years y ON y.id=s.academic_year_id`;
 
 r.get('/admin/etudiants', need('admin'), H(async (req, res) => {
   const q = String(req.query.q || '').trim();
@@ -832,11 +824,15 @@ r.post('/admin/etudiants', need('admin'), H(async (req, res) => {
   if (!emailRe.test(b.email)) return res.redirect(303, url('/admin/etudiants', { ...req.ctx, err: 'E-mail invalide' }));
   const generated = !String(b.password || '').trim();
   const pw = generated ? 'etudiant123' : String(b.password);
+  const programId = asNum(b.program_id);
+  const levelId = asNum(b.level_id);
+  const yearId = asNum(b.academic_year_id) ?? (await db.prepare('SELECT id FROM academic_years WHERE is_current=1').get())?.id ?? null;
+  const academicClass = await resolveAcademicClass(programId, levelId, yearId);
   const ui = await tx(async () => {
     const x = await db.prepare('INSERT INTO users (email,password_hash,role,first_name,last_name) VALUES (?,?,?,?,?)')
       .run(b.email.trim().toLowerCase(), hashPassword(pw), 'student', b.first_name.trim(), b.last_name.trim());
     await db.prepare('INSERT INTO students (user_id,matricule,program_id,level_id,class_id,academic_year_id) VALUES (?,?,?,?,?,?)')
-      .run(x.lastInsertRowid, b.matricule.trim(), asNum(b.program_id), asNum(b.level_id), null, asNum(b.academic_year_id) ?? (await db.prepare('SELECT id FROM academic_years WHERE is_current=1').get())?.id ?? null);
+      .run(x.lastInsertRowid, b.matricule.trim(), programId, levelId, academicClass?.id ?? null, yearId);
     return x;
   });
   res.redirect(303, url('/admin/etudiants/' + (await db.prepare('SELECT id FROM students WHERE user_id=?').get(ui.lastInsertRowid)).id, { ...req.ctx, ok: 'Étudiant créé' + (generated ? ' — mot de passe initial : etudiant123' : ' — mot de passe : le vôtre') }));
@@ -905,11 +901,14 @@ r.post('/admin/etudiants/:id', need('admin'), H(async (req, res) => {
   if (!s) throw notFound();
   const b = req.body;
   if (b.toggle_active) { await db.prepare('UPDATE users SET is_active=1-is_active WHERE id=?').run(s.user_id); return res.redirect(303, url('/admin/etudiants/' + s.id, { ...req.ctx, ok: 'Compte mis à jour.' })); }
+  const programId = asNum(b.program_id);
+  const levelId = asNum(b.level_id);
+  const academicClass = await resolveAcademicClass(programId, levelId, s.academic_year_id);
   await tx(async () => {
     await db.prepare('UPDATE users SET first_name=COALESCE(?,first_name), last_name=COALESCE(?,last_name), email=COALESCE(?,email) WHERE id=?')
       .run(String(b.first_name || '').trim() || null, String(b.last_name || '').trim() || null, b.email ? String(b.email).trim().toLowerCase() : null, s.user_id);
-    await db.prepare('UPDATE students SET matricule=COALESCE(?,matricule), program_id=?, level_id=?, academic_year_id=? WHERE id=?')
-      .run(String(b.matricule || '').trim() || null, asNum(b.program_id), asNum(b.level_id), s.academic_year_id, s.id);
+    await db.prepare('UPDATE students SET matricule=COALESCE(?,matricule), program_id=?, level_id=?, class_id=?, academic_year_id=? WHERE id=?')
+      .run(String(b.matricule || '').trim() || null, programId, levelId, academicClass?.id ?? null, s.academic_year_id, s.id);
     if (String(b.reset_password || '').trim()) await db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hashPassword(b.reset_password), s.user_id);
   });
   res.redirect(303, url('/admin/etudiants/' + s.id, { ...req.ctx, ok: 'Fiche enregistrée.' }));
@@ -1177,7 +1176,6 @@ const REF_TABLES = {
   years: { table: 'academic_years', cols: [['label', 'Libellé']], add: [['label', 'ex : 2026-2027'], ['start_year', '2026']], order: 'start_year DESC', current: true },
   programs: { table: 'programs', cols: [['name', 'Nom'], ['code', 'Code']], add: [['name', 'Gestion'], ['code', 'GEST']], order: 'name' },
   levels: { table: 'levels', cols: [['name', 'Nom'], ['cycle', 'Cycle'], ['ord', 'Ordre']], add: [['name', 'L1'], ['cycle', 'Licence'], ['ord', '1']], order: 'ord, name' },
-  classes: { table: 'classes', cols: [['name', 'Classe']], add: [['name', 'G1']], order: 'name' },
   institutions: { table: 'institutions', cols: [['name', 'Nom'], ['code', 'Code']], add: [['name', 'Université de…'], ['code', 'UNIV']], order: 'name' },
 };
 r.get('/admin/referentiels', need('admin'), H(async (req, res) => {
@@ -1201,15 +1199,7 @@ r.get('/admin/referentiels', need('admin'), H(async (req, res) => {
     ${await block('years', 'Années universitaires')}
     ${await block('programs', 'Filières')}
     ${await block('levels', 'Niveaux')}
-    ${await block('institutions', 'Établissements')}
-    <div class="card" style="margin-bottom:12px"><h3 style="margin:0 0 8px;font-size:13px">Classes</h3>
-      <table class="tbl"><tbody>${o.classes.map((c) => `<tr><td>${esc(c.name)}</td><td class="tiny muted">${esc(c.p)} · ${esc(c.l)}</td>
-      <td class="n"><form method="post" action="${url('/admin/ref/classes/' + c.id + '/delete', req.ctx)}" style="display:inline">${hiddenT(req.ctx.t, { th: req.ctx.th })}<button class="btn mini danger" style="width:auto">✕</button></form></td></tr>`).join('') || '<tr><td class="tiny muted">Aucune classe.</td></tr>'}</tbody></table>
-      <form class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap" method="post" action="${url('/admin/ref/classes', req.ctx)}">${hiddenT(req.ctx.t, { th: req.ctx.th })}
-        <input class="input" style="width:150px;padding:7px 10px" name="name" placeholder="G1 A" required/>
-        <select class="input" style="width:auto" name="program_id">${o.programs.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
-        <select class="input" style="width:auto" name="level_id">${o.levels.map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join('')}</select>
-        <button class="btn mini" style="width:auto">＋ Classe</button></form></div>`;
+    ${await block('institutions', 'Établissements')}`;
   res.send(adminPage(req, 'Référentiels', body));
 }));
 r.post('/admin/ref/:key', need('admin'), H(async (req, res) => {
@@ -1475,10 +1465,10 @@ r.post('/admin/import/commit', need('admin'), H(async (req, res) => {
 
 /* — Fichiers d'export (admin) + divers — */
 r.get('/admin/fichiers/etudiants.csv', need('admin'), H(async (_req, res) => {
-  const rows = await db.prepare(`SELECT s.matricule, u.last_name, u.first_name, u.email, p.name AS program, l.name AS level, c.name AS class, y.label AS year
+  const rows = await db.prepare(`SELECT s.matricule, u.last_name, u.first_name, u.email, p.name AS program, l.name AS level, y.label AS year
     FROM students s JOIN users u ON u.id=s.user_id LEFT JOIN programs p ON p.id=s.program_id
-    LEFT JOIN levels l ON l.id=s.level_id LEFT JOIN classes c ON c.id=s.class_id LEFT JOIN academic_years y ON y.id=s.academic_year_id ORDER BY u.last_name`).all();
-  sendCsv(res, 'etudiants.csv', csv(rows, ['matricule', 'last_name', 'first_name', 'email', 'program', 'level', 'class', 'year']));
+    LEFT JOIN levels l ON l.id=s.level_id LEFT JOIN academic_years y ON y.id=s.academic_year_id ORDER BY u.last_name`).all();
+  sendCsv(res, 'etudiants.csv', csv(rows, ['matricule', 'last_name', 'first_name', 'email', 'program', 'level', 'year']));
 }));
 r.get('/admin/fichiers/modele/:id.csv', need('admin'), H(async (req, res) => {
   const t = await db.prepare('SELECT * FROM templates WHERE id=?').get(Number(req.params.id));
@@ -1499,7 +1489,7 @@ r.get('/admin/fichiers/releve/:id.xlsx', need('admin'), H(async (req, res) => {
   await sendReleveXlsx(res, s, req.query.source === 'personal' ? 'personal' : 'official');
 }));
 
-/* ---- Admin — calendrier daté par niveau et groupe ---- */
+/* ---- Admin — calendrier daté par niveau ---- */
 const ADMIN_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const adminToday = () => {
   const d = new Date();
@@ -1514,36 +1504,41 @@ const adminDateLabel = (value) => new Date(`${value}T12:00:00`).toLocaleDateStri
   weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric',
 });
 
+/* Une seule structure est utilisée par niveau. La ligne historique de la table
+   classes reste interne pour préserver les emplois du temps déjà enregistrés. */
+const calendarOwner = async (levelId) => await db.prepare(`SELECT c.id, c.level_id, c.program_id,
+    l.name AS level_name, p.name AS program_name
+  FROM classes c
+  JOIN levels l ON l.id=c.level_id
+  JOIN programs p ON p.id=c.program_id
+  WHERE c.level_id=?
+  ORDER BY CASE WHEN c.academic_year_id=(SELECT id FROM academic_years WHERE is_current=1 LIMIT 1) THEN 0 ELSE 1 END, c.id
+  LIMIT 1`).get(levelId);
+
 r.get('/admin/emploi', need('admin'), H(async (req, res) => {
   const levels = await db.prepare('SELECT id, name, ord FROM levels ORDER BY ord, name').all();
-  const allClasses = await db.prepare(`SELECT c.id, c.name, c.level_id, c.program_id,
-      l.name AS level_name, p.name AS program_name
-    FROM classes c JOIN levels l ON l.id=c.level_id JOIN programs p ON p.id=c.program_id
-    ORDER BY c.level_id, p.name, c.name, c.id`).all();
   if (!levels.length) {
-    res.send(adminPage(req, 'Calendrier', '<div class="empty">Créez d’abord un niveau et une classe.</div>'));
+    res.send(adminPage(req, 'Calendrier', '<div class="empty">Créez d’abord un niveau et un modèle de relevé.</div>'));
     return;
   }
 
   const requestedLevel = Number(req.query.level);
   const levelId = levels.some((l) => l.id === requestedLevel) ? requestedLevel : levels[0].id;
-  const classes = allClasses.filter((c) => c.level_id === levelId);
-  const requestedClass = Number(req.query.clazz);
-  const selectedClass = classes.find((c) => c.id === requestedClass) || classes[0] || null;
-  const clazz = selectedClass?.id || null;
+  const selectedLevel = levels.find((l) => l.id === levelId);
+  const owner = await calendarOwner(levelId);
   const selectedDate = adminValidDate(req.query.date) ? String(req.query.date) : adminToday();
   const weekday = adminDay(selectedDate);
 
-  if (!selectedClass) {
-    res.send(adminPage(req, 'Calendrier', '<div class="empty">Aucune classe n’est rattachée à ce niveau.</div>'));
+  if (!owner) {
+    res.send(adminPage(req, 'Calendrier', `<div class="empty">Aucune filière n’est configurée pour ${esc(selectedLevel.name)}.</div>`));
     return;
   }
 
-  /* Les matières sont volontairement prises dans TOUS les semestres du niveau et
-     du programme de la classe : S3 et S4 apparaissent dans la même liste. */
+  /* Les matières sont prises dans TOUS les semestres du niveau et de la filière :
+     S3 et S4 apparaissent dans la même liste. */
   const semesters = await db.prepare(`SELECT s.id, s.number, s.name
     FROM semesters s JOIN templates t ON t.id=s.template_id
-    WHERE t.level_id=? AND t.program_id=? ORDER BY s.ord, s.number`).all(selectedClass.level_id, selectedClass.program_id);
+    WHERE t.level_id=? AND t.program_id=? ORDER BY s.ord, s.number`).all(owner.level_id, owner.program_id);
   const courses = await db.prepare(`SELECT c.id, c.name, c.coefficient, c.credits,
       u.code AS ucode, s.id AS semester_id, s.number AS semester_number, s.name AS semester_name
     FROM courses c
@@ -1551,10 +1546,10 @@ r.get('/admin/emploi', need('admin'), H(async (req, res) => {
     JOIN semesters s ON s.id=u.semester_id
     JOIN templates t ON t.id=s.template_id
     WHERE t.level_id=? AND t.program_id=?
-    ORDER BY s.ord, u.ord, c.ord, c.id`).all(selectedClass.level_id, selectedClass.program_id);
+    ORDER BY s.ord, u.ord, c.ord, c.id`).all(owner.level_id, owner.program_id);
 
-  /* Les créneaux créés avec l’ancienne version restent visibles chaque semaine via
-     leur jour. Les nouveaux créneaux sont, eux, rattachés à une date exacte. */
+  /* Les anciens créneaux restent hebdomadaires ; les nouveaux sont rattachés à
+     une date exacte. Dans les deux cas, l’identifiant technique reste invisible. */
   const rows = await db.prepare(`SELECT sl.*, c.name AS cname,
       s.number AS semester_number, s.name AS semester_name,
       l.name AS level_name, p.name AS program_name
@@ -1566,9 +1561,8 @@ r.get('/admin/emploi', need('admin'), H(async (req, res) => {
     LEFT JOIN programs p ON p.id=t.program_id
     WHERE sl.class_id=?
       AND (sl.slot_date=? OR (sl.slot_date IS NULL AND sl.day=?))
-    ORDER BY COALESCE(sl.slot_date, ?), sl.day, sl.start`).all(clazz, selectedDate, weekday, selectedDate);
+    ORDER BY COALESCE(sl.slot_date, ?), sl.day, sl.start`).all(owner.id, selectedDate, weekday, selectedDate);
 
-  const classOptions = classes.map((c) => `<option value="${c.id}" ${c.id === clazz ? 'selected' : ''}>${esc(c.program_name)} · ${esc(c.name)}</option>`).join('');
   const levelOptions = levels.map((l) => `<option value="${l.id}" ${l.id === levelId ? 'selected' : ''}>${esc(l.name)}</option>`).join('');
   const semesterOptions = semesters.map((s) => `<option value="${s.id}">S${s.number} · ${esc(s.name)}</option>`).join('');
   const courseOptions = courses.length
@@ -1577,14 +1571,13 @@ r.get('/admin/emploi', need('admin'), H(async (req, res) => {
 
   const filter = `<form class="inline" method="get" action="${url('/admin/emploi', req.ctx)}" style="margin-bottom:12px;align-items:end">
     <div class="field" style="min-width:150px"><label>Niveau</label><select class="input" name="level">${levelOptions}</select></div>
-    <div class="field" style="min-width:210px"><label>Groupe</label><select class="input" name="clazz">${classOptions}</select></div>
     <div class="field" style="min-width:175px"><label>Date</label><input class="input" type="date" name="date" value="${esc(selectedDate)}" required/></div>
     <button class="btn sm ghost" style="width:auto">Afficher</button></form>`;
 
   const form = `<form class="card" method="post" action="${url('/admin/emploi/add', req.ctx)}" style="margin-top:14px">
     ${hiddenT(req.ctx.t, { th: req.ctx.th })}
-    <input type="hidden" name="level" value="${levelId}"/><input type="hidden" name="clazz" value="${clazz}"/><input type="hidden" name="slot_date" value="${esc(selectedDate)}"/>
-    <h3 style="margin:0 0 10px;font-size:14px">Ajouter un créneau — ${esc(selectedClass.level_name)} · ${esc(selectedClass.program_name)} · ${esc(selectedClass.name)}</h3>
+    <input type="hidden" name="level" value="${levelId}"/><input type="hidden" name="slot_date" value="${esc(selectedDate)}"/>
+    <h3 style="margin:0 0 10px;font-size:14px">Ajouter un créneau — ${esc(owner.level_name)} · ${esc(owner.program_name)}</h3>
     <p class="tiny muted" style="margin:-4px 0 12px">Date sélectionnée : <b>${esc(adminDateLabel(selectedDate))}</b>. Les matières proposées regroupent tous les semestres du niveau, notamment S3 et S4.</p>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px">
       <div class="field" style="grid-column:span 2"><label>Matière du niveau — tous les semestres</label><select class="input" name="course_id"><option value="">— Intitulé libre —</option>${courseOptions}</select></div>
@@ -1596,25 +1589,25 @@ r.get('/admin/emploi', need('admin'), H(async (req, res) => {
     </div>
     <button class="btn sm" style="margin-top:8px">Ajouter le créneau à cette date</button></form>`;
 
-  const table = rows.length ? `<div class="card" style="padding:0;overflow-x:auto"><table class="tbl"><thead><tr><th>Date</th><th>Niveau / semestre</th><th>Horaires</th><th>Matière</th><th>Salle</th><th></th></tr></thead><tbody>
+  const table = rows.length ? `<div class="card" style="padding:0;overflow-x:auto"><table class="tbl"><thead><tr><th>Date</th><th>Semestre</th><th>Horaires</th><th>Matière</th><th>Salle</th><th></th></tr></thead><tbody>
       ${rows.map((rw) => {
     const dateText = rw.slot_date ? adminDateLabel(rw.slot_date) : `${DAY_NAMES[rw.day - 1]} · hebdomadaire`;
     const semText = rw.semester_number ? `S${rw.semester_number}` : '—';
-    return `<tr><td>${esc(dateText)}</td><td>${esc(rw.level_name || selectedClass.level_name)} · ${esc(semText)}</td><td class="n" style="text-align:left">${esc(rw.start)}–${esc(rw.end)}</td><td>${esc(rw.cname || rw.title || '')}</td><td>${esc(rw.room || '—')}</td>
-        <td class="r"><form method="post" action="${url('/admin/emploi/del', req.ctx)}" style="display:inline">${hiddenT(req.ctx.t, { th: req.ctx.th })}<input type="hidden" name="id" value="${rw.id}"/><input type="hidden" name="level" value="${levelId}"/><input type="hidden" name="clazz" value="${clazz}"/><input type="hidden" name="slot_date" value="${esc(selectedDate)}"/><button class="btn sm danger mini">Supprimer</button></form></td></tr>`;
+    return `<tr><td>${esc(dateText)}</td><td>${esc(semText)}</td><td class="n" style="text-align:left">${esc(rw.start)}–${esc(rw.end)}</td><td>${esc(rw.cname || rw.title || '')}</td><td>${esc(rw.room || '—')}</td>
+        <td class="r"><form method="post" action="${url('/admin/emploi/del', req.ctx)}" style="display:inline">${hiddenT(req.ctx.t, { th: req.ctx.th })}<input type="hidden" name="id" value="${rw.id}"/><input type="hidden" name="level" value="${levelId}"/><input type="hidden" name="slot_date" value="${esc(selectedDate)}"/><button class="btn sm danger mini">Supprimer</button></form></td></tr>`;
   }).join('')}
     </tbody></table></div>` : `<div class="empty">Aucun créneau pour ${esc(adminDateLabel(selectedDate))}. Ajoutez-en ci-dessous.</div>`;
   res.send(adminPage(req, 'Calendrier', `<h1 style="font-size:18px;margin:4px 2px 10px">Calendrier de l’emploi du temps</h1>${filter}${table}${form}`));
 }));
 
 r.post('/admin/emploi/add', need('admin'), H(async (req, res) => {
-  const clazz = Number(req.body.clazz);
+  const levelId = Number(req.body.level);
   const selectedDate = adminValidDate(req.body.slot_date) ? String(req.body.slot_date) : adminToday();
   const day = adminDay(selectedDate);
-  if (!clazz || !adminValidDate(selectedDate)) throw badRequest('Niveau, groupe et date sont requis');
+  if (!levelId || !adminValidDate(selectedDate)) throw badRequest('Niveau et date requis');
   if (!(day >= 1 && day <= 6)) throw badRequest('Choisissez une date du lundi au samedi');
-  const klass = await db.prepare('SELECT id, level_id, program_id FROM classes WHERE id=?').get(clazz);
-  if (!klass) throw badRequest('Groupe inconnu');
+  const owner = await calendarOwner(levelId);
+  if (!owner) throw badRequest('Niveau sans filière configurée');
   if (!/^\d{2}:\d{2}$/.test(String(req.body.start || '')) || !/^\d{2}:\d{2}$/.test(String(req.body.end || '')) || String(req.body.end) <= String(req.body.start)) throw badRequest('Horaires invalides : format HH:MM, fin après début');
   const start = String(req.body.start); const end = String(req.body.end);
   const courseId = req.body.course_id ? Number(req.body.course_id) : null;
@@ -1623,30 +1616,30 @@ r.post('/admin/emploi/add', need('admin'), H(async (req, res) => {
     const course = await db.prepare(`SELECT c.id, s.id AS semester_id
       FROM courses c JOIN units u ON u.id=c.unit_id JOIN semesters s ON s.id=u.semester_id
       JOIN templates t ON t.id=s.template_id
-      WHERE c.id=? AND t.level_id=? AND t.program_id=?`).get(courseId, klass.level_id, klass.program_id);
+      WHERE c.id=? AND t.level_id=? AND t.program_id=?`).get(courseId, owner.level_id, owner.program_id);
     if (!course) throw badRequest('Matière inconnue pour le niveau sélectionné');
     semesterId = course.semester_id;
   } else {
     const sem = await db.prepare(`SELECT s.id FROM semesters s JOIN templates t ON t.id=s.template_id
-      WHERE s.id=? AND t.level_id=? AND t.program_id=?`).get(semesterId, klass.level_id, klass.program_id);
+      WHERE s.id=? AND t.level_id=? AND t.program_id=?`).get(semesterId, owner.level_id, owner.program_id);
     if (!sem) throw badRequest('Choisissez un semestre pour l’intitulé libre');
   }
   const title = courseId ? null : String(req.body.title || '').trim().slice(0, 120);
   if (!courseId && !title) throw badRequest('Choisissez une matière ou saisissez un intitulé libre');
   const room = String(req.body.room || '').trim().slice(0, 60) || null;
   await db.prepare('INSERT INTO schedule_slots (class_id, semester_id, course_id, title, slot_date, day, start, end, room) VALUES (?,?,?,?,?,?,?,?,?)')
-    .run(clazz, semesterId, courseId, title, selectedDate, day, start, end, room);
-  res.redirect(303, url('/admin/emploi', { ...req.ctx, level: klass.level_id, clazz, date: selectedDate, ok: 'Créneau ajouté' }));
+    .run(owner.id, semesterId, courseId, title, selectedDate, day, start, end, room);
+  res.redirect(303, url('/admin/emploi', { ...req.ctx, level: owner.level_id, date: selectedDate, ok: 'Créneau ajouté' }));
 }));
 
 r.post('/admin/emploi/del', need('admin'), H(async (req, res) => {
-  const id = Number(req.body.id); const clazz = Number(req.body.clazz);
+  const id = Number(req.body.id);
   const selectedDate = adminValidDate(req.body.slot_date) ? String(req.body.slot_date) : adminToday();
-  const klass = await db.prepare('SELECT id, level_id FROM classes WHERE id=?').get(clazz);
-  const rw = await db.prepare('SELECT id FROM schedule_slots WHERE id=? AND class_id=?').get(id, clazz);
-  if (!klass || !rw) throw notFound('Créneau introuvable');
-  await db.prepare('DELETE FROM schedule_slots WHERE id=? AND class_id=?').run(id, clazz);
-  res.redirect(303, url('/admin/emploi', { ...req.ctx, level: klass.level_id, clazz, date: selectedDate, ok: 'Créneau supprimé' }));
+  const rw = await db.prepare('SELECT id, class_id FROM schedule_slots WHERE id=?').get(id);
+  if (!rw) throw notFound('Créneau introuvable');
+  const owner = await db.prepare('SELECT id, level_id FROM classes WHERE id=?').get(rw.class_id);
+  await db.prepare('DELETE FROM schedule_slots WHERE id=?').run(id);
+  res.redirect(303, url('/admin/emploi', { ...req.ctx, level: owner?.level_id || Number(req.body.level) || '', date: selectedDate, ok: 'Créneau supprimé' }));
 }));
 
 export default r;

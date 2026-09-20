@@ -1,6 +1,6 @@
-/* Profil.jsx — compte étudiant : informations, scolarité (filière/niveau/classe/année),
+/* Profil.jsx — compte étudiant : informations, scolarité (filière/niveau/année),
  * sécurité (mot de passe), thème, déconnexion. */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../../api.js';
 import { useApp } from '../../store.jsx';
@@ -10,8 +10,8 @@ export default function Profil() {
   const { user, setUser, logout, refresh, theme, toggleTheme } = useApp();
   const nav = useNavigate();
   const [toast, showToast] = useToast();
-  const [opts, setOpts] = useState({ programs: [], levels: [], years: [], classes: [] });
-  const [enr, setEnr] = useState({ program_id: '', level_id: '', class_id: '', academic_year_id: '' });
+  const [opts, setOpts] = useState({ programs: [], levels: [], years: [] });
+  const [enr, setEnr] = useState({ program_id: '', level_id: '', academic_year_id: '' });
   const [idn, setIdn] = useState({ first_name: user?.first_name || '', last_name: user?.last_name || '' });
   const [pwOpen, setPwOpen] = useState(false);
   const [pw, setPw] = useState({ old_password: '', password: '', confirm: '' });
@@ -20,15 +20,13 @@ export default function Profil() {
     api('/auth/options').then((o) => {
       setOpts(o);
       const st = user?.student || {};
-      setEnr({ program_id: st.program_id ? String(st.program_id) : '', level_id: st.level_id ? String(st.level_id) : '', class_id: st.class_id ? String(st.class_id) : '', academic_year_id: st.academic_year_id ? String(st.academic_year_id) : '' });
+      setEnr({ program_id: st.program_id ? String(st.program_id) : '', level_id: st.level_id ? String(st.level_id) : '', academic_year_id: st.academic_year_id ? String(st.academic_year_id) : '' });
     });
   }, [user]);
 
-  const classes = useMemo(() => opts.classes.filter((c) => (!enr.program_id || c.program_id === +enr.program_id) && (!enr.level_id || c.level_id === +enr.level_id)), [opts, enr]);
-
   const saveEnrollment = async () => {
     try {
-      await api('/student/enrollment', { method: 'PUT', body: { program_id: enr.program_id || null, level_id: enr.level_id || null, class_id: enr.class_id || null, academic_year_id: enr.academic_year_id || null } });
+      await api('/student/enrollment', { method: 'PUT', body: { program_id: enr.program_id || null, level_id: enr.level_id || null, academic_year_id: enr.academic_year_id || null } });
       await refresh();
       showToast('Scolarité mise à jour ✓');
     } catch (e) { showToast('⚠️ ' + e.message); }
@@ -63,7 +61,6 @@ export default function Profil() {
             <div className="small muted">{user?.email}</div>
             <div className="row" style={{ gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
               {st.matricule && <Chip tone="gray">Matricule {st.matricule}</Chip>}
-              {st.class && <Chip tone="violet">{st.class}</Chip>}
               {st.year && <Chip tone="gray">{st.year}</Chip>}
             </div>
           </div>
@@ -73,24 +70,19 @@ export default function Profil() {
       <div className="section-title"><h3>Scolarité</h3></div>
       <Card>
         <Field label="Filière">
-          <select className="input" value={enr.program_id} onChange={(e) => setEnr({ ...enr, program_id: e.target.value, class_id: '' })}>
+          <select className="input" value={enr.program_id} onChange={(e) => setEnr({ ...enr, program_id: e.target.value })}>
             <option value="">— Non définie —</option>
             {opts.programs.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
         </Field>
         <div className="grid2">
           <Field label="Niveau">
-            <select className="input" value={enr.level_id} onChange={(e) => setEnr({ ...enr, level_id: e.target.value, class_id: '' })}>
+            <select className="input" value={enr.level_id} onChange={(e) => setEnr({ ...enr, level_id: e.target.value })}>
               <option value="">— —</option>
               {opts.levels.map((l) => <option key={l.id} value={l.id}>{l.name} · {l.cycle}</option>)}
             </select>
           </Field>
-          <Field label="Classe / groupe">
-            <select className="input" value={enr.class_id} onChange={(e) => setEnr({ ...enr, class_id: e.target.value })}>
-              <option value="">— —</option>
-              {classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </Field>
+
         </div>
         <Field label="Année universitaire">
           <select className="input" value={enr.academic_year_id} onChange={(e) => setEnr({ ...enr, academic_year_id: e.target.value })}>

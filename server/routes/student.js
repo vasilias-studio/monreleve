@@ -8,6 +8,7 @@
  */
 import { asyncRouter } from '../asyncrouter.js';
 import db, { tx } from '../db.js';
+import { resolveAcademicClass } from '../academic.js';
 import { authRequired, attachStudent, badRequest, notFound, forbidden } from '../auth.js';
 import { computeReleve, resolveRules, round2 } from '../compute.js';
 
@@ -182,25 +183,31 @@ r.put('/grades', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-/** PUT /api/student/enrollment — l'étudiant ajuste filière/niveau/classe/année (son propre profil). */
+/** PUT /api/student/enrollment — l'étudiant ajuste filière/niveau/année (son propre profil). */
 r.put('/enrollment', async (req, res, next) => {
   try {
     const b = req.body || {};
     const pick = (f) => (b[f] !== undefined ? (b[f] === null ? null : Number(b[f])) : null);
-    const fields = { program_id: pick('program_id'), level_id: pick('level_id'), class_id: pick('class_id'), academic_year_id: pick('academic_year_id') };
+    const fields = { program_id: pick('program_id'), level_id: pick('level_id'), academic_year_id: pick('academic_year_id') };
     for (const [k, v] of Object.entries(fields)) {
       if (v === null) delete fields[k];
       else if (!Number.isFinite(v) || v <= 0) throw badRequest(`Valeur invalide : ${k}`);
     }
     if (!Object.keys(fields).length) throw badRequest('Rien à modifier');
+    const current = await db.prepare('SELECT * FROM students WHERE id=?').get(req.student.id);
+    const programId = fields.program_id ?? current.program_id;
+    const levelId = fields.level_id ?? current.level_id;
+    const yearId = fields.academic_year_id ?? current.academic_year_id;
+    fields.class_id = (await resolveAcademicClass(programId, levelId, yearId))?.id ?? null;
     const keys = Object.keys(fields);
     await db.prepare(`UPDATE students SET ${keys.map((k) => k + '=?').join(',')} WHERE id=?`)
       .run(...keys.map((k) => fields[k]), req.student.id);
     const s = await db.prepare('SELECT * FROM students WHERE id=?').get(req.student.id);
-    const j = await db.prepare(`SELECT p.name AS program, l.name AS level, c.name AS class, y.label AS year
+    const { class_id: _internalClassId, ...publicStudent } = s;
+    const j = await db.prepare(`SELECT p.name AS program, l.name AS level, y.label AS year
       FROM students s2 LEFT JOIN programs p ON p.id=s2.program_id LEFT JOIN levels l ON l.id=s2.level_id
-      LEFT JOIN classes c ON c.id=s2.class_id LEFT JOIN academic_years y ON y.id=s2.academic_year_id WHERE s2.id=?`).get(s.id);
-    res.json({ ok: true, enrollment: { ...s, ...j } });
+      LEFT JOIN academic_years y ON y.id=s2.academic_year_id WHERE s2.id=?`).get(s.id);
+    res.json({ ok: true, enrollment: { ...publicStudent, ...j } });
   } catch (e) { next(e); }
 });
 

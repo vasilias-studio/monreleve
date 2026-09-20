@@ -1,4 +1,4 @@
-/* Refs.jsx — gestion des référentiels : établissements, filières, niveaux, années universitaires, classes.
+/* Refs.jsx — gestion des référentiels : établissements, filières, niveaux et années universitaires.
  * Tout est stocké en base : l'application n'a rien de codé en dur. */
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../../api.js';
@@ -9,7 +9,6 @@ const TABLES = {
   programs: { label: 'Filières', path: '/admin/programs', columns: [['name', 'Nom', 'text'], ['code', 'Code', 'text'], ['institution_id', 'Établissement', 'ref:institutions'] ], joins: { institution: 'institutions' } },
   levels: { label: 'Niveaux', path: '/admin/levels', columns: [['name', 'Nom (L1, L2, M1…)', 'text'], ['cycle', 'Cycle', 'text'], ['ord', 'Ordre', 'number']] },
   years: { label: 'Années universitaires', path: '/admin/years', columns: [['label', 'Libellé (2026-2027)', 'text'], ['start_year', 'Année de début', 'number'], ['is_current', 'Année courante', 'check']] },
-  classes: { label: 'Classes / groupes', path: '/admin/classes', columns: [['name', 'Nom', 'text'], ['program_id', 'Filière', 'ref:programs'], ['level_id', 'Niveau', 'ref:levels'], ['academic_year_id', 'Année', 'ref:years']] },
 };
 
 export default function Refs() {

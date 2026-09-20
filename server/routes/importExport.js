@@ -238,11 +238,11 @@ const sendCsv = (res, name, content) => {
 };
 
 r.get('/export/students.csv', async (_req, res) => {
-  const rows = await db.prepare(`SELECT s.matricule, u.last_name, u.first_name, u.email, p.name AS program, l.name AS level, c.name AS class, y.label AS year
+  const rows = await db.prepare(`SELECT s.matricule, u.last_name, u.first_name, u.email, p.name AS program, l.name AS level, y.label AS year
     FROM students s JOIN users u ON u.id=s.user_id LEFT JOIN programs p ON p.id=s.program_id
-    LEFT JOIN levels l ON l.id=s.level_id LEFT JOIN classes c ON c.id=s.class_id
+    LEFT JOIN levels l ON l.id=s.level_id
     LEFT JOIN academic_years y ON y.id=s.academic_year_id ORDER BY u.last_name`).all();
-  sendCsv(res, 'etudiants.csv', csv(rows, ['matricule', 'last_name', 'first_name', 'email', 'program', 'level', 'class', 'year']));
+  sendCsv(res, 'etudiants.csv', csv(rows, ['matricule', 'last_name', 'first_name', 'email', 'program', 'level', 'year']));
 });
 
 r.get('/export/template/:id.csv', async (req, res, next) => {

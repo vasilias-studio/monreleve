@@ -53,7 +53,6 @@ export async function buildRelevePdf(opts) {
   const infos = [
     ['ÉTUDIANT', `${u?.last_name || ''} ${u?.first_name || ''}`.trim().toUpperCase()],
     ['MATRICULE', stud?.matricule || '—'],
-    ['CLASSE', (stud?.class_name || '—') + ''],
     ['SEMESTRES', sems.map((s) => 'S' + s.number).join(' · ')],
   ];
   const colW = W / infos.length;

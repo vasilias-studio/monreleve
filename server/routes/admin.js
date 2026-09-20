@@ -1,6 +1,6 @@
 /**
  * routes/admin.js — Espace administrateur.
- * Gestion des référentiels (établissements, filières, niveaux, classes, années),
+ * Gestion des référentiels (établissements, filières, niveaux et années),
  * des étudiants, des modèles de relevés (semestres/UE/matières/coeffs/crédits/règles),
  * des notes officielles et de la publication/verrouillage des résultats.
  */
@@ -10,6 +10,7 @@ import db, { tx } from '../db.js';
 import { authRequired, requireRole, badRequest, notFound, forbidden, ApiError } from '../auth.js';
 import { computeReleve, resolveRules } from '../compute.js';
 import { findTemplateForStudent, loadTemplateTree } from './student.js';
+import { resolveAcademicClass } from '../academic.js';
 
 const r = asyncRouter();
 r.use(authRequired, requireRole('admin'));
@@ -86,8 +87,6 @@ r.use('/programs', refCrud('programs', ['institution_id', 'name', 'code', 'activ
 r.use('/levels', refCrud('levels', ['name', 'cycle', 'ord'], { orderBy: 'ord, name' }));
 r.use('/years', refCrud('academic_years', ['label', 'start_year', 'is_current'], { orderBy: 'start_year DESC' }));
 
-r.use('/classes', refCrud('classes', ['program_id', 'level_id', 'academic_year_id', 'name']));
-
 /* Année courante */
 r.put('/years/:id/current', async (req, res, next) => {
   try {
@@ -103,14 +102,13 @@ r.put('/years/:id/current', async (req, res, next) => {
 /* Étudiants                                                            */
 /* ------------------------------------------------------------------ */
 const studentSelect = `
-  SELECT s.id, s.matricule, s.program_id, s.level_id, s.class_id, s.academic_year_id, s.created_at,
+  SELECT s.id, s.matricule, s.program_id, s.level_id, s.academic_year_id, s.created_at,
          u.id AS user_id, u.email, u.is_active, u.first_name, u.last_name,
-         p.name AS program, l.name AS level, c.name AS class, y.label AS year
+         p.name AS program, l.name AS level, y.label AS year
   FROM students s
   JOIN users u ON u.id = s.user_id
   LEFT JOIN programs p ON p.id = s.program_id
   LEFT JOIN levels l ON l.id = s.level_id
-  LEFT JOIN classes c ON c.id = s.class_id
   LEFT JOIN academic_years y ON y.id = s.academic_year_id`;
 
 r.get('/students', async (req, res) => {
@@ -157,11 +155,15 @@ r.post('/students', async (req, res, next) => {
     const b = req.body || {};
     for (const f of ['first_name', 'last_name', 'email', 'matricule']) if (!str(b[f])) throw badRequest(`Champ manquant : ${f}`);
     const password = str(b.password) || 'etudiant123';
+    const programId = num(b.program_id);
+    const levelId = num(b.level_id);
+    const yearId = num(b.academic_year_id) ?? (await db.prepare('SELECT id FROM academic_years WHERE is_current=1').get())?.id ?? null;
+    const academicClass = await resolveAcademicClass(programId, levelId, yearId);
     const info = await tx(async () => {
       const ui = await db.prepare('INSERT INTO users (email, password_hash, role, first_name, last_name) VALUES (?,?,?, ?, ?)')
         .run(b.email.trim().toLowerCase(), bcrypt.hashSync(password, 10), 'student', b.first_name.trim(), b.last_name.trim());
       await db.prepare('INSERT INTO students (user_id, matricule, program_id, level_id, class_id, academic_year_id) VALUES (?,?,?,?,?,?)')
-        .run(ui.lastInsertRowid, b.matricule.trim(), num(b.program_id), num(b.level_id), num(b.class_id), num(b.academic_year_id));
+        .run(ui.lastInsertRowid, b.matricule.trim(), programId, levelId, academicClass?.id ?? null, yearId);
       return ui;
     });
     res.status(201).json({ id: info.lastInsertRowid, generated_password: str(b.password) ? null : password });
@@ -174,14 +176,18 @@ r.put('/students/:id', async (req, res, next) => {
     const s = await db.prepare('SELECT * FROM students WHERE id=?').get(req.params.id);
     if (!s) throw notFound('Étudiant introuvable');
     const b = req.body || {};
+    const programId = num(b.program_id) ?? s.program_id;
+    const levelId = num(b.level_id) ?? s.level_id;
+    const yearId = num(b.academic_year_id) ?? s.academic_year_id;
+    const academicClass = await resolveAcademicClass(programId, levelId, yearId);
     await tx(async () => {
       if (b.first_name || b.last_name || b.email) {
         await db.prepare(`UPDATE users SET first_name=COALESCE(?,first_name), last_name=COALESCE(?,last_name), email=COALESCE(?,email) WHERE id=?`)
           .run(str(b.first_name), str(b.last_name), b.email ? str(b.email).toLowerCase() : null, s.user_id);
       }
       await db.prepare(`UPDATE students SET matricule=COALESCE(?,matricule), program_id=COALESCE(?,program_id), level_id=COALESCE(?,level_id),
-        class_id=COALESCE(?,class_id), academic_year_id=COALESCE(?,academic_year_id) WHERE id=?`)
-        .run(str(b.matricule), num(b.program_id), num(b.level_id), num(b.class_id), num(b.academic_year_id), s.id);
+        class_id=?, academic_year_id=COALESCE(?,academic_year_id) WHERE id=?`)
+        .run(str(b.matricule), programId, levelId, academicClass?.id ?? null, yearId, s.id);
       if (b.reset_password) await db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(bcrypt.hashSync(String(b.reset_password), 10), s.user_id);
     });
     res.json({ ok: true });

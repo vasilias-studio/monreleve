@@ -40,6 +40,10 @@ export function ensureBootstrap() {
       if (!/duplicate column|already exists/i.test(String(e?.message || e))) throw e;
     }
     await db.exec('CREATE INDEX IF NOT EXISTS idx_slots_date ON schedule_slots(class_id, slot_date, start)');
+    /* Les anciennes annonces ciblées par classe restent lisibles sans exposer cette
+       notion dans l’interface : elles deviennent générales, sans supprimer le texte. */
+    await db.prepare("UPDATE announcements SET audience='all', class_id=NULL WHERE audience='class'").run();
+    await db.prepare("UPDATE announcements SET body=REPLACE(REPLACE(body, 'Réunion des délégués de classe', 'Réunion d’information'), 'travaux de groupe', 'travaux collectifs') WHERE body LIKE ?").run('%délégués de classe%');
     try {
       if ((await db.prepare('SELECT COUNT(*) n FROM users').get()).n === 0) {
         console.log('[start] Base vide → seed automatique…');

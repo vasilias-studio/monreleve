@@ -2,9 +2,9 @@
  * annonces.js — fil d'annonces de la page d'accueil (« publications »).
  *
  * Modèle : une annonce = un texte publié par l'administration, adressé soit à
- * tous les étudiants, soit à une filière, soit à une classe. Les étudiants
- * « aiment » une annonce (une fois par personne). Rien n'est codé en dur :
- * les cibles viennent des référentiels (programs / classes).
+ * tous les étudiants, soit à une filière. Les étudiants « aiment » une annonce
+ * (une fois par personne). Rien n'est codé en dur : les cibles viennent des
+ * référentiels (programs).
  *
  * ⚠ Ne pas confondre avec la table `publications`, qui gère la diffusion des
  *   résultats officiels par semestre (verrou brouillon/publié).
@@ -13,7 +13,7 @@ import db, { tx } from './db.js';
 
 /** Annonces visibles par un lecteur : tout le monde pour un admin, sinon ciblage. */
 export async function feed(viewer, { limit = 50 } = {}) {
-  const base = `SELECT a.id, a.body, a.audience, a.pinned, a.created_at, a.program_id, a.class_id,
+  const base = `SELECT a.id, a.body, a.audience, a.pinned, a.created_at, a.program_id,
       u.first_name, u.last_name, u.role AS author_role,
       (SELECT COUNT(*) FROM announcement_likes l WHERE l.announcement_id = a.id) AS likes
     FROM announcements a LEFT JOIN users u ON u.id = a.author_id`;
@@ -22,8 +22,7 @@ export async function feed(viewer, { limit = 50 } = {}) {
   return await db.prepare(`${base}
     WHERE a.audience = 'all'
        OR (a.audience = 'program' AND a.program_id = ?)
-       OR (a.audience = 'class' AND a.class_id = ?)
-    ${order}`).all(viewer.program_id ?? -1, viewer.class_id ?? -1, limit);
+    ${order}`).all(viewer.program_id ?? -1, limit);
 }
 
 /** Identifiants des annonces déjà aimées par cet utilisateur (pour l'état du bouton). */
@@ -45,7 +44,6 @@ export async function toggleLike(announcementId, userId) {
 
 /** Libellé de la cible d'une annonce (chip de la carte). */
 export async function audienceLabel(a) {
-  if (a.audience === 'class') return (await db.prepare('SELECT name FROM classes WHERE id=?').get(a.class_id))?.name || 'Classe';
   if (a.audience === 'program') return (await db.prepare('SELECT name FROM programs WHERE id=?').get(a.program_id))?.name || 'Filière';
   return 'Tous les étudiants';
 }
@@ -87,11 +85,10 @@ export async function ensureAnnonces() {
   const admin = await db.prepare("SELECT id FROM users WHERE role='admin' ORDER BY id LIMIT 1").get();
   if (!admin) return 0;
   const prog = await db.prepare('SELECT id, name FROM programs ORDER BY id LIMIT 1').get();
-  const klass = await db.prepare('SELECT id, name FROM classes ORDER BY id LIMIT 1').get();
   const demo = [
     { body: "Ouverture des saisies du semestre 4 : vous pouvez compléter vos notes dès maintenant depuis l'onglet Saisie. Les résultats officiels du semestre 3 restent consultables dans Relevé.", audience: 'all', when: "-35 minutes", pinned: 1 },
     { body: "Les évaluations de mi-parcours se déroulent samedi matin, Amphi A. Présentez-vous 15 minutes avant le début de l'épreuve avec votre carte d'étudiant.", audience: 'all', when: "-6 hours", pinned: 0 },
-    { body: 'Réunion des délégués de classe jeudi à 12 h en salle 21 : ordre du jour — calendrier des rattrapages et organisation des travaux de groupe.', audience: 'class', when: "-1 day", pinned: 0 },
+    { body: 'Réunion d’information jeudi à 12 h en salle 21 : ordre du jour — calendrier des rattrapages et organisation des travaux collectifs.', audience: 'all', when: "-1 day", pinned: 0 },
     { body: 'La bibliothèque universitaire prolonge ses horaires pendant la période d’examens : ouverture jusqu’à 21 h du lundi au vendredi.', audience: 'program', when: "-3 days", pinned: 0 },
   ];
   return await tx(async () => {
@@ -100,8 +97,7 @@ export async function ensureAnnonces() {
     for (const d of demo) {
       await ins.run(admin.id, d.body, d.audience,
         d.audience === 'program' ? prog?.id ?? null : null,
-        d.audience === 'class' ? klass?.id ?? null : null,
-        d.pinned, d.when);
+        null, d.pinned, d.when);
       n++;
     }
     return n;

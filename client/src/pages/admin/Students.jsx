@@ -1,5 +1,5 @@
 /* Students.jsx — liste + recherche + création d'étudiants par l'admin. */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../../api.js';
 import { Card, Row, Chip, Modal, Field, Spinner, useToast, SearchBar, Empty } from '../../ui.jsx';
@@ -8,7 +8,7 @@ export default function Students() {
   const [q, setQ] = useState('');
   const [filters, setFilters] = useState({ program_id: '', level_id: '' });
   const [rows, setRows] = useState(null);
-  const [opts, setOpts] = useState({ programs: [], levels: [], years: [], classes: [] });
+  const [opts, setOpts] = useState({ programs: [], levels: [], years: [] });
   const [creating, setCreating] = useState(false);
   const [toast, showToast] = useToast();
   const [err, setErr] = useState(null);
@@ -50,7 +50,6 @@ export default function Students() {
           </div>
           <div style={{ textAlign: 'right' }}>
             <div className="tiny" style={{ fontWeight: 700 }}>{s.level} — {s.program}</div>
-            <div className="tiny muted">{s.class || 'sans classe'}</div>
           </div>
           {!s.is_active && <Chip tone="bad">Désactivé</Chip>}
         </Link>
@@ -61,16 +60,15 @@ export default function Students() {
 }
 
 function CreateStudent({ open, onClose, opts, onDone, toast }) {
-  const [f, setF] = useState({ first_name: '', last_name: '', email: '', matricule: '', password: '', program_id: '', level_id: '', class_id: '', academic_year_id: '' });
+  const [f, setF] = useState({ first_name: '', last_name: '', email: '', matricule: '', password: '', program_id: '', level_id: '', academic_year_id: '' });
   const [busy, setBusy] = useState(false);
-  const classes = useMemo(() => opts.classes.filter((c) => (!f.program_id || c.program_id === +f.program_id) && (!f.level_id || c.level_id === +f.level_id)), [opts, f]);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const submit = async () => {
     setBusy(true);
     try {
-      const r = await api('/admin/students', { method: 'POST', body: { ...f, program_id: f.program_id || null, level_id: f.level_id || null, class_id: f.class_id || null, academic_year_id: f.academic_year_id || (opts.years.find((y) => y.is_current) || {}).id || null } });
+      const r = await api('/admin/students', { method: 'POST', body: { ...f, program_id: f.program_id || null, level_id: f.level_id || null, academic_year_id: f.academic_year_id || (opts.years.find((y) => y.is_current) || {}).id || null } });
       onDone(r.generated_password ? `Étudiant créé — mot de passe provisoire : ${r.generated_password}` : 'Étudiant créé ✓');
-      setF({ first_name: '', last_name: '', email: '', matricule: '', password: '', program_id: '', level_id: '', class_id: '', academic_year_id: '' });
+      setF({ first_name: '', last_name: '', email: '', matricule: '', password: '', program_id: '', level_id: '', academic_year_id: '' });
     } catch (e) { toast('⚠️ ' + e.message); } finally { setBusy(false); }
   };
   return (
@@ -89,20 +87,12 @@ function CreateStudent({ open, onClose, opts, onDone, toast }) {
             {opts.programs.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
         </Field>
-        <div className="grid2">
-          <Field label="Niveau">
-            <select className="input" value={f.level_id} onChange={set('level_id')}>
-              <option value="">— —</option>
-              {opts.levels.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
-            </select>
-          </Field>
-          <Field label="Classe">
-            <select className="input" value={f.class_id} onChange={set('class_id')}>
-              <option value="">— —</option>
-              {classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </Field>
-        </div>
+        <Field label="Niveau">
+          <select className="input" value={f.level_id} onChange={set('level_id')}>
+            <option value="">— —</option>
+            {opts.levels.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+          </select>
+        </Field>
         <button className="btn" disabled={busy} onClick={submit}>{busy ? 'Création…' : 'Créer le compte'}</button>
       </div>
     </Modal>

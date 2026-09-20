@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../api.js';
 import { useApp } from '../store.jsx';
@@ -8,8 +8,8 @@ import { Field } from '../ui.jsx';
 export default function Register() {
   const { register } = useApp();
   const nav = useNavigate();
-  const [opts, setOpts] = useState({ programs: [], levels: [], years: [], classes: [] });
-  const [f, setF] = useState({ first_name: '', last_name: '', matricule: '', email: '', password: '', program_id: '', level_id: '', class_id: '', academic_year_id: '' });
+  const [opts, setOpts] = useState({ programs: [], levels: [], years: [] });
+  const [f, setF] = useState({ first_name: '', last_name: '', matricule: '', email: '', password: '', program_id: '', level_id: '', academic_year_id: '' });
   const [err, setErr] = useState(null);
   const [busy, setBusy] = useState(false);
 
@@ -21,16 +21,12 @@ export default function Register() {
     }).catch(() => {});
   }, []);
 
-  const classes = useMemo(() => opts.classes.filter((c) =>
-    (!f.program_id || c.program_id === +f.program_id) && (!f.level_id || c.level_id === +f.level_id)
-  ), [opts, f.program_id, f.level_id]);
-
-  const set = (k) => (e) => setF({ ...f, [k]: e.target.value, ...(k === 'program_id' || k === 'level_id' ? { class_id: '' } : {}) });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
 
   const submit = async (e) => {
     e.preventDefault(); setErr(null); setBusy(true);
     try {
-      await register({ ...f, program_id: f.program_id || null, level_id: f.level_id || null, class_id: f.class_id || null, academic_year_id: f.academic_year_id || null });
+      await register({ ...f, program_id: f.program_id || null, level_id: f.level_id || null, academic_year_id: f.academic_year_id || null });
       nav('/accueil');
     } catch (e2) { setErr(e2.message); } finally { setBusy(false); }
   };
@@ -60,20 +56,12 @@ export default function Register() {
               {opts.programs.map((p) => <option key={p.id} value={p.id}>{p.name}{p.code ? ` (${p.code})` : ''}</option>)}
             </select>
           </Field>
-          <div className="grid2">
-            <Field label="Niveau">
-              <select className="input" value={f.level_id} onChange={set('level_id')} required>
-                <option value="">— Niveau —</option>
-                {opts.levels.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
-              </select>
-            </Field>
-            <Field label="Classe / groupe">
-              <select className="input" value={f.class_id} onChange={set('class_id')}>
-                <option value="">— Aucune —</option>
-                {classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
-            </Field>
-          </div>
+          <Field label="Niveau">
+            <select className="input" value={f.level_id} onChange={set('level_id')} required>
+              <option value="">— Niveau —</option>
+              {opts.levels.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+            </select>
+          </Field>
           <button className="btn" disabled={busy}>{busy ? 'Création…' : 'Créer mon compte'}</button>
           <p className="small muted" style={{ textAlign: 'center', margin: '14px 0 0' }}>
             Déjà inscrit ? <Link to="/login" className="link-btn">Se connecter</Link>

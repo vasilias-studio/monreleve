@@ -39,7 +39,6 @@ export default function StudentDetail() {
             <div className="row" style={{ gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
               <Chip tone="violet">{s.level} — {s.program}</Chip>
               <Chip tone="gray">{s.matricule}</Chip>
-              {s.class && <Chip tone="gray">{s.class}</Chip>}
               {s.year && <Chip tone="gray">{s.year}</Chip>}
               {!s.is_active && <Chip tone="bad">Compte désactivé</Chip>}
             </div>
@@ -158,7 +157,7 @@ function EditStudentModal({ open, onClose, student, onSaved, toast }) {
   const [opts, setOpts] = useState(null);
   useEffect(() => {
     if (open) {
-      setF({ first_name: student.first_name || '', last_name: student.last_name || '', email: student.email || '', matricule: student.matricule || '', program_id: student.program_id ? String(student.program_id) : '', level_id: student.level_id ? String(student.level_id) : '', class_id: student.class_id ? String(student.class_id) : '', academic_year_id: student.academic_year_id ? String(student.academic_year_id) : '', reset_password: '', is_active: !!student.is_active });
+      setF({ first_name: student.first_name || '', last_name: student.last_name || '', email: student.email || '', matricule: student.matricule || '', program_id: student.program_id ? String(student.program_id) : '', level_id: student.level_id ? String(student.level_id) : '', academic_year_id: student.academic_year_id ? String(student.academic_year_id) : '', reset_password: '', is_active: !!student.is_active });
       api('/auth/options').then(setOpts);
     }
   }, [open, student]);
@@ -166,7 +165,7 @@ function EditStudentModal({ open, onClose, student, onSaved, toast }) {
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const save = async () => {
     try {
-      await api('/admin/students/' + student.id, { method: 'PUT', body: { ...f, program_id: f.program_id || null, level_id: f.level_id || null, class_id: f.class_id || null, academic_year_id: f.academic_year_id || null, reset_password: f.reset_password || undefined } });
+      await api('/admin/students/' + student.id, { method: 'PUT', body: { ...f, program_id: f.program_id || null, level_id: f.level_id || null, academic_year_id: f.academic_year_id || null, reset_password: f.reset_password || undefined } });
       await api('/admin/students/' + student.id + '/active', { method: 'PUT', body: { is_active: f.is_active } });
       onSaved();
     } catch (e) { toast('⚠️ ' + e.message); }
@@ -188,10 +187,7 @@ function EditStudentModal({ open, onClose, student, onSaved, toast }) {
           <Field label="Filière"><select className="input" value={f.program_id} onChange={set('program_id')}><option value="">—</option>{opts.programs.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></Field>
           <Field label="Niveau"><select className="input" value={f.level_id} onChange={set('level_id')}><option value="">—</option>{opts.levels.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</select></Field>
         </div>
-        <div className="grid2">
-          <Field label="Classe"><select className="input" value={f.class_id} onChange={set('class_id')}><option value="">—</option>{opts.classes.filter((c) => (!f.program_id || c.program_id === +f.program_id) && (!f.level_id || c.level_id === +f.level_id)).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></Field>
-          <Field label="Année"><select className="input" value={f.academic_year_id} onChange={set('academic_year_id')}><option value="">—</option>{opts.years.map((y) => <option key={y.id} value={y.id}>{y.label}</option>)}</select></Field>
-        </div>
+        <Field label="Année"><select className="input" value={f.academic_year_id} onChange={set('academic_year_id')}><option value="">—</option>{opts.years.map((y) => <option key={y.id} value={y.id}>{y.label}</option>)}</select></Field>
         <Field label="Nouveau mot de passe (vide = inchangé)"><input className="input" value={f.reset_password} onChange={set('reset_password')} placeholder="Réinitialiser si nécessaire" /></Field>
         <Row className="spread tight"><span className="small" style={{ fontWeight: 700 }}>Compte actif</span>
           <input type="checkbox" checked={f.is_active} onChange={(e) => setF({ ...f, is_active: e.target.checked })} style={{ width: 20, height: 20 }} /></Row>

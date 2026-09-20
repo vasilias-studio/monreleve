@@ -7,6 +7,7 @@ import { asyncRouter } from '../asyncrouter.js';
 import bcrypt from 'bcryptjs';
 import db, { tx } from '../db.js';
 import { signToken, hashPassword, verifyPassword, authRequired, ApiError, badRequest, notFound, newResetToken } from '../auth.js';
+import { resolveAcademicClass } from '../academic.js';
 
 const r = asyncRouter();
 const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -28,8 +29,6 @@ async function studentPayload(student) {
       program_id: student.program_id,
       level: await names('SELECT name FROM levels WHERE id=?', student.level_id),
       level_id: student.level_id,
-      class: await names('SELECT name FROM classes WHERE id=?', student.class_id),
-      class_id: student.class_id,
       year: await names('SELECT label FROM academic_years WHERE id=?', student.academic_year_id),
       academic_year_id: student.academic_year_id,
     },
@@ -47,17 +46,18 @@ r.post('/register', async (req, res, next) => {
     if (String(b.password).length < 6) throw badRequest('Mot de passe : 6 caractères minimum');
     if (await db.prepare('SELECT id FROM users WHERE email=?').get(b.email.trim())) throw badRequest('Un compte existe déjà avec cet e-mail');
     if (await db.prepare('SELECT id FROM students WHERE matricule=?').get(String(b.matricule).trim())) throw badRequest('Ce matricule est déjà utilisé');
-    const programId = asNum(b.program_id), levelId = asNum(b.level_id), classId = asNum(b.class_id);
+    const programId = asNum(b.program_id), levelId = asNum(b.level_id);
     let yearId = asNum(b.academic_year_id);
     if (!yearId) yearId = (await db.prepare('SELECT id FROM academic_years WHERE is_current=1').get())?.id ?? null;
     if (programId && !await db.prepare('SELECT id FROM programs WHERE id=? AND active=1').get(programId)) throw badRequest('Filière inconnue');
     if (levelId && !await db.prepare('SELECT id FROM levels WHERE id=?').get(levelId)) throw badRequest('Niveau inconnu');
+    const academicClass = await resolveAcademicClass(programId, levelId, yearId);
 
     const created = await tx(async () => {
       const ui = await db.prepare('INSERT INTO users (email, password_hash, role, last_name, first_name) VALUES (?,?,?,?,?)')
         .run(b.email.trim().toLowerCase(), hashPassword(b.password), 'student', b.last_name.trim(), b.first_name.trim());
       const si = await db.prepare('INSERT INTO students (user_id, matricule, program_id, level_id, class_id, academic_year_id) VALUES (?,?,?,?,?,?)')
-        .run(ui.lastInsertRowid, String(b.matricule).trim(), programId, levelId, classId, yearId);
+        .run(ui.lastInsertRowid, String(b.matricule).trim(), programId, levelId, academicClass?.id ?? null, yearId);
       return { userId: ui.lastInsertRowid, studentId: si.lastInsertRowid };
     });
     const user = await db.prepare('SELECT * FROM users WHERE id=?').get(created.userId);
@@ -151,9 +151,6 @@ r.get('/options', async (_req, res) => {
     programs: await db.prepare('SELECT id, name, code FROM programs WHERE active=1 ORDER BY name').all(),
     levels: await db.prepare('SELECT id, name, cycle FROM levels ORDER BY ord, name').all(),
     years: await db.prepare('SELECT id, label, is_current FROM academic_years ORDER BY start_year DESC').all(),
-    classes: await db.prepare(`SELECT c.id, c.name, c.program_id, c.level_id, p.name AS program, l.name AS level, y.label AS year
-      FROM classes c JOIN programs p ON p.id=c.program_id JOIN levels l ON l.id=c.level_id
-      LEFT JOIN academic_years y ON y.id=c.academic_year_id ORDER BY c.name`).all(),
   });
 });
 
