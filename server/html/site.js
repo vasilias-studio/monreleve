@@ -1504,16 +1504,32 @@ const adminDateLabel = (value) => new Date(`${value}T12:00:00`).toLocaleDateStri
   weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric',
 });
 
-/* Une seule structure est utilisée par niveau. La ligne historique de la table
-   classes reste interne pour préserver les emplois du temps déjà enregistrés. */
-const calendarOwner = async (levelId) => await db.prepare(`SELECT c.id, c.level_id, c.program_id,
-    l.name AS level_name, p.name AS program_name
-  FROM classes c
-  JOIN levels l ON l.id=c.level_id
-  JOIN programs p ON p.id=c.program_id
-  WHERE c.level_id=?
-  ORDER BY CASE WHEN c.academic_year_id=(SELECT id FROM academic_years WHERE is_current=1 LIMIT 1) THEN 0 ELSE 1 END, c.id
-  LIMIT 1`).get(levelId);
+/* Une seule structure est utilisée par niveau. Le modèle académique du niveau
+   détermine la filière et l'année ; le propriétaire technique est ensuite
+   résolu ou créé automatiquement, sans choix visible. */
+const calendarOwner = async (levelId) => {
+  const template = await db.prepare(`SELECT t.program_id, t.level_id, t.academic_year_id,
+      l.name AS level_name, p.name AS program_name
+    FROM templates t
+    JOIN levels l ON l.id=t.level_id
+    JOIN programs p ON p.id=t.program_id
+    WHERE t.level_id=?
+    ORDER BY CASE WHEN t.academic_year_id=(SELECT id FROM academic_years WHERE is_current=1 LIMIT 1) THEN 0 ELSE 1 END,
+      t.updated_at DESC, t.id DESC
+    LIMIT 1`).get(levelId);
+  if (template) {
+    const owner = await resolveAcademicClass(template.program_id, template.level_id, template.academic_year_id);
+    return owner ? { ...owner, level_name: template.level_name, program_name: template.program_name } : null;
+  }
+  return await db.prepare(`SELECT c.id, c.level_id, c.program_id,
+      l.name AS level_name, p.name AS program_name
+    FROM classes c
+    JOIN levels l ON l.id=c.level_id
+    JOIN programs p ON p.id=c.program_id
+    WHERE c.level_id=?
+    ORDER BY CASE WHEN c.academic_year_id=(SELECT id FROM academic_years WHERE is_current=1 LIMIT 1) THEN 0 ELSE 1 END, c.id
+    LIMIT 1`).get(levelId);
+};
 
 r.get('/admin/emploi', need('admin'), H(async (req, res) => {
   const levels = await db.prepare('SELECT id, name, ord FROM levels ORDER BY ord, name').all();
