@@ -41,6 +41,8 @@ npm run serve          # → http://localhost:4000  (site HTML + API, port uniqu
 `better-sqlite3` (base locale) est une dépendance *optionnelle* : elle est installée
 automatiquement en local, et ignorée lors d'un déploiement PostgreSQL
 (`npm install --omit=optional`), ce qui évite toute compilation native en ligne.
+Le lecteur Excel (`xlsx` 0.20.3) vient du dépôt officiel SheetJS : c'est la version maintenue
+(la version du registre npm porte deux avis de sécurité). `npm audit --omit=dev` : 0 vulnérabilité.
 
 C'est tout : pas de build, pas de Vite. **Si la base est vide, le serveur la crée et la remplit
 automatiquement** (référentiels + modèle L2 issu de l'Excel + comptes de démo).

@@ -130,6 +130,17 @@ GITHUB_TOKEN=votre_jeton bash tools/github-publish.sh --name monreleve
 
 ---
 
+## Une remarque sur les dépendances
+
+Le lecteur de classeurs Excel (`xlsx`) vient du dépôt officiel SheetJS
+(`https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz`) et non du registre npm : c'est la version
+maintenue, qui corrige deux avis de sécurité de la version npm. Le reste des dépendances est
+ordinaire ; `npm audit --omit=dev --omit=optional` ne remonte **aucune vulnérabilité**.
+`better-sqlite3` (moteur local) est *optionnel* : il n'est jamais installé en ligne, ce qui évite
+toute compilation native.
+
+---
+
 ## Essayer la configuration en ligne sans rien créer
 
 Deux commandes suffisent pour vérifier que tout fonctionne avec la pile « Vercel + PostgreSQL »
@@ -227,6 +238,8 @@ Conséquences pratiques :
 | Page figée / `504` | La fonction dépasse la limite de 60 s (rare) : vérifiez la connexion à la base, ou augmentez `maxDuration` dans `vercel.json`. |
 | Le site redemande une connexion sans arrêt | `SESSION_SECRET` a changé entre deux déploiements : remettez toujours la même valeur. |
 | Import Excel : « Fichier import introuvable » | Le classeur a été purgé (24 h) ou envoyé avant un redéploiement : ré-uploadez-le. |
+| `403` sur `cdn.sheetjs.com` pendant l'installation | Le réseau de l'usine à déploiements bloque le domaine : remplacez la ligne `xlsx` du `package.json` par `"xlsx": "^0.18.5"` (version du registre npm, légèrement plus ancienne) le temps du déploiement. |
+| `Base de données introuvable…` | Ni `DATABASE_URL` ni moteur local : sur Vercel, `DATABASE_URL` est indispensable (voir tableau). |
 
 ---
 
