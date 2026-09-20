@@ -78,8 +78,8 @@ r.use(async (req, res, next) => {
   next();
 });
 const need = (role) => (req, res, next) => {
-  if (!req.user) { res.redirect('/login?err=' + encodeURIComponent('Session requise — connectez-vous.')); return; }
-  if (role && req.user.role !== role) { res.redirect(req.user.role === 'admin' ? url('/admin', req.ctx) : url('/accueil', req.ctx)); return; }
+  if (!req.user) { res.redirect(303, '/login?err=' + encodeURIComponent('Session requise — connectez-vous.')); return; }
+  if (role && req.user.role !== role) { res.redirect(303, req.user.role === 'admin' ? url('/admin', req.ctx) : url('/accueil', req.ctx)); return; }
   next();
 };
 const student = async (req) => await db.prepare('SELECT * FROM students WHERE user_id=?').get(req.user.id);
@@ -153,8 +153,8 @@ async function sendReleveXlsx(res, stud, source) {
 /* Pages publiques                                                      */
 /* ------------------------------------------------------------------ */
 r.get('/', H((req, res) => {
-  if (!req.user) return res.redirect(url('/login', req.ctx));
-  res.redirect(url(req.user.role === 'admin' ? '/admin' : '/accueil', req.ctx));
+  if (!req.user) return res.redirect(303, url('/login', req.ctx));
+  res.redirect(303, url(req.user.role === 'admin' ? '/admin' : '/accueil', req.ctx));
 }));
 
 const authShell = (req, title, body) => page(req.ctx, { title, body, bare: true });
@@ -182,16 +182,16 @@ r.post('/login', H(async (req, res) => {
   const email = String(req.body.email || '').trim().toLowerCase();
   const user = await db.prepare('SELECT * FROM users WHERE email=?').get(email);
   if (!user || !verifyPassword(String(req.body.password || ''), user.password_hash)) {
-    return res.redirect('/login?err=' + encodeURIComponent('Identifiants incorrects.'));
+    return res.redirect(303, '/login?err=' + encodeURIComponent('Identifiants incorrects.'));
   }
-  if (!user.is_active) return res.redirect('/login?err=' + encodeURIComponent('Compte désactivé — contactez l’administration.'));
+  if (!user.is_active) return res.redirect(303, '/login?err=' + encodeURIComponent('Compte désactivé — contactez l’administration.'));
   const t = signToken(user);
   res.cookie('mrt', t, { httpOnly: true, sameSite: 'lax', maxAge: 30 * 864e5 });
   // Après un POST, 303 impose une nouvelle requête GET (Vercel peut conserver POST avec 307).
   res.redirect(303, url(user.role === 'admin' ? '/admin' : '/accueil', { t, th: req.ctx.th }));
 }));
 
-r.get('/deconnexion', H((req, res) => { res.clearCookie('mrt'); res.redirect(url('/login', { th: req.ctx.th })); }));
+r.get('/deconnexion', H((req, res) => { res.clearCookie('mrt'); res.redirect(303, url('/login', { th: req.ctx.th })); }));
 
 r.get('/register', H(async (req, res) => {
   const o = await opts();
@@ -220,7 +220,7 @@ r.get('/register', H(async (req, res) => {
 
 r.post('/register', H(async (req, res) => {
   const b = req.body;
-  const fail = (m) => res.redirect(url('/register', { ...req.ctx, err: m }));
+  const fail = (m) => res.redirect(303, url('/register', { ...req.ctx, err: m }));
   for (const f of ['first_name', 'last_name', 'email', 'password', 'matricule']) if (!String(b[f] || '').trim()) return fail(`Champ manquant : ${f === 'first_name' ? 'prénom' : f === 'last_name' ? 'nom' : f}`);
   if (!emailRe.test(b.email)) return fail('Adresse e-mail invalide');
   if (String(b.password).length < 6) return fail('Mot de passe : 6 caractères minimum');
@@ -253,9 +253,9 @@ r.post('/forgot', H(async (req, res) => {
     const token = newResetToken();
     await db.prepare(`UPDATE users SET reset_token=?, reset_expires=datetime('now','+1 hour') WHERE id=?`).run(token, user.id);
     // Mode démo (aucun SMTP) : on affiche directement le lien, comme pour l'API.
-    return res.redirect(url('/reset', { th: req.ctx.th, token }));
+    return res.redirect(303, url('/reset', { th: req.ctx.th, token }));
   }
-  res.redirect('/forgot?ok=' + encodeURIComponent('Si un compte existe, un lien de réinitialisation vient d’être envoyé.'));
+  res.redirect(303, '/forgot?ok=' + encodeURIComponent('Si un compte existe, un lien de réinitialisation vient d’être envoyé.'));
 }));
 r.get('/reset', H((req, res) => {
   const token = String(req.query.token || '');
@@ -269,10 +269,10 @@ r.get('/reset', H((req, res) => {
 }));
 r.post('/reset', H(async (req, res) => {
   const user = await db.prepare(`SELECT * FROM users WHERE reset_token=? AND reset_expires > datetime('now')`).get(String(req.body.token || ''));
-  if (!user) return res.redirect('/forgot?err=' + encodeURIComponent('Lien invalide ou expiré.'));
-  if (String(req.body.password || '').length < 6) return res.redirect(url('/reset', { th: req.ctx.th, token: req.body.token, err: 'Mot de passe : 6 caractères minimum' }));
+  if (!user) return res.redirect(303, '/forgot?err=' + encodeURIComponent('Lien invalide ou expiré.'));
+  if (String(req.body.password || '').length < 6) return res.redirect(303, url('/reset', { th: req.ctx.th, token: req.body.token, err: 'Mot de passe : 6 caractères minimum' }));
   await db.prepare(`UPDATE users SET password_hash=?, reset_token=NULL, reset_expires=NULL WHERE id=?`).run(hashPassword(req.body.password), user.id);
-  res.redirect(url('/login', { th: req.ctx.th, ok: 'Mot de passe mis à jour — connectez-vous.' }));
+  res.redirect(303, url('/login', { th: req.ctx.th, ok: 'Mot de passe mis à jour — connectez-vous.' }));
 }));
 
 /* ------------------------------------------------------------------ */
@@ -336,7 +336,7 @@ async function composer(req) {
 
 /* Le fil est public dans l'app : étudiant et administration le voient (l'admin y écrit). */
 r.get('/accueil', (req, res, next) => {
-  if (!req.user) { res.redirect('/login?err=' + encodeURIComponent('Session requise — connectez-vous.')); return; }
+  if (!req.user) { res.redirect(303, '/login?err=' + encodeURIComponent('Session requise — connectez-vous.')); return; }
   next();
 }, H(async (req, res) => {
   const admin = req.user.role === 'admin';
@@ -359,7 +359,7 @@ r.get('/accueil', (req, res, next) => {
 
 /* Publication d'une annonce (administration). */
 r.post('/accueil/annonces', need('admin'), H(async (req, res) => {
-  const fail = (m) => res.redirect(url('/accueil', { ...req.ctx, err: m }));
+  const fail = (m) => res.redirect(303, url('/accueil', { ...req.ctx, err: m }));
   const text = String(req.body.body || '').trim();
   if (!text) return fail('Annonce vide : écrivez un texte.');
   const audience = ['all', 'program', 'class'].includes(req.body.audience) ? req.body.audience : 'all';
@@ -374,18 +374,18 @@ r.post('/accueil/annonces', need('admin'), H(async (req, res) => {
   }
   await db.prepare('INSERT INTO announcements (author_id, body, audience, program_id, class_id, pinned) VALUES (?,?,?,?,?,?)')
     .run(req.user.id, text.slice(0, 2000), audience, programId, classId, req.body.pinned ? 1 : 0);
-  res.redirect(url('/accueil', { ...req.ctx, ok: 'Annonce publiée.' }));
+  res.redirect(303, url('/accueil', { ...req.ctx, ok: 'Annonce publiée.' }));
 }));
 
 /* « J'aime » (bascule, une fois par personne). */
 r.post('/accueil/annonces/:id/aime', (req, res, next) => {
-  if (!req.user) { res.redirect('/login?err=' + encodeURIComponent('Session requise — connectez-vous.')); return; }
+  if (!req.user) { res.redirect(303, '/login?err=' + encodeURIComponent('Session requise — connectez-vous.')); return; }
   next();
 }, H(async (req, res) => {
   const id = Number(req.params.id);
   if (!await db.prepare('SELECT id FROM announcements WHERE id=?').get(id)) throw notFound('Annonce introuvable');
   await toggleLike(id, req.user.id);
-  res.redirect(url('/accueil', req.ctx));
+  res.redirect(303, url('/accueil', req.ctx));
 }));
 
 /* Modération : épingler / désépingler. */
@@ -394,18 +394,18 @@ r.post('/accueil/annonces/:id/epingler', need('admin'), H(async (req, res) => {
   const a = await db.prepare('SELECT pinned FROM announcements WHERE id=?').get(id);
   if (!a) throw notFound('Annonce introuvable');
   await db.prepare('UPDATE announcements SET pinned=? WHERE id=?').run(a.pinned ? 0 : 1, id);
-  res.redirect(url('/accueil', { ...req.ctx, ok: a.pinned ? 'Annonce désépinglée.' : 'Annonce épinglée.' }));
+  res.redirect(303, url('/accueil', { ...req.ctx, ok: a.pinned ? 'Annonce désépinglée.' : 'Annonce épinglée.' }));
 }));
 
 /* Modération : supprimer (les « J'aime » suivent en cascade). */
 r.post('/accueil/annonces/:id/supprimer', need('admin'), H(async (req, res) => {
   await db.prepare('DELETE FROM announcements WHERE id=?').run(Number(req.params.id));
-  res.redirect(url('/accueil', { ...req.ctx, ok: 'Annonce supprimée.' }));
+  res.redirect(303, url('/accueil', { ...req.ctx, ok: 'Annonce supprimée.' }));
 }));
 
 r.get('/saisie', need('student'), H(async (req, res) => {
   const d = await studentData(await student(req));
-  if (!d.template) return res.redirect(url('/accueil', { ...req.ctx, err: 'Aucun modèle disponible.' }));
+  if (!d.template) return res.redirect(303, url('/accueil', { ...req.ctx, err: 'Aucun modèle disponible.' }));
   const cur = d.personal.semesters.find((s) => String(s.id) === String(req.query.sem)) || d.personal.semesters[0];
   const tabsHtml = `<div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:10px">${d.personal.semesters.map((s) =>
     `<a class="chip ${s.id === cur.id ? 'violet' : 'gray'}" id="tab${s.id}" style="text-decoration:none" href="${url('/saisie', { ...req.ctx, sem: s.id })}">S${s.number}${s.average != null ? ' · ' + fmt(s.average) : ''}</a>`).join('')}</div>`;
@@ -445,7 +445,7 @@ r.post('/saisie/:semId', need('student'), H(async (req, res) => {
   const stmt = await db.prepare(`INSERT INTO grades (student_id,course_id,source,normal,rattrapage,updated_at) VALUES (?,?,'personal',?,?,datetime('now'))
     ON CONFLICT(student_id,course_id,source) DO UPDATE SET normal=excluded.normal, rattrapage=excluded.rattrapage, updated_at=datetime('now')`);
   await tx(async () => { for (const cid of ids) await stmt.run(stud.id, cid, score(req.body['n_' + cid] ?? ''), score(req.body['r_' + cid] ?? '')); });
-  res.redirect(url('/saisie', { ...req.ctx, sem: sem.id, ok: 'Notes enregistrées · moyennes recalculées.' }));
+  res.redirect(303, url('/saisie', { ...req.ctx, sem: sem.id, ok: 'Notes enregistrées · moyennes recalculées.' }));
 }));
 
 const releveTable = (sem, { editable = false, locked = false } = {}) => `
@@ -465,7 +465,7 @@ const releveTable = (sem, { editable = false, locked = false } = {}) => `
 r.get('/releve', need('student'), H(async (req, res) => {
   const stud = await student(req);
   const d = await studentData(stud);
-  if (!d.template) return res.redirect(url('/accueil', { ...req.ctx, err: 'Aucun modèle disponible.' }));
+  if (!d.template) return res.redirect(303, url('/accueil', { ...req.ctx, err: 'Aucun modèle disponible.' }));
   const src = req.query.source === 'official' ? 'official' : 'personal';
   const sems = src === 'official' ? d.officialVisible : d.personal.semesters;
   const tot = src === 'official' ? d.official : d.personal;
@@ -555,7 +555,7 @@ r.get('/mon-releve.xlsx', need('student'), H(async (req, res) => {
   await sendReleveXlsx(res, await student(req), req.query.source === 'official' ? 'official' : 'personal');
 }));
 
-r.get('/moyennes', need('student'), H((req, res) => res.redirect(url('/releve', req.ctx))));
+r.get('/moyennes', need('student'), H((req, res) => res.redirect(303, url('/releve', req.ctx))));
 
 
 /* ════════════════ EMPLOI DU TEMPS (calendrier) ════════════════ */
@@ -734,19 +734,19 @@ r.post('/profil/enrollment', need('student'), H(async (req, res) => {
   const s = await student(req);
   await db.prepare('UPDATE students SET program_id=?, level_id=?, class_id=?, academic_year_id=? WHERE id=?')
     .run(asNum(req.body.program_id), asNum(req.body.level_id), asNum(req.body.class_id) ?? null, asNum(req.body.academic_year_id) ?? null, s.id);
-  res.redirect(url('/profil', { ...req.ctx, ok: 'Scolarité mise à jour.' }));
+  res.redirect(303, url('/profil', { ...req.ctx, ok: 'Scolarité mise à jour.' }));
 }));
 r.post('/profil/names', need('student'), H(async (req, res) => {
   await db.prepare('UPDATE users SET last_name=?, first_name=? WHERE id=?').run(String(req.body.last_name || '').trim() || req.user.last_name, String(req.body.first_name || '').trim() || req.user.first_name, req.user.id);
-  res.redirect(url('/profil', { ...req.ctx, ok: 'Profil enregistré.' }));
+  res.redirect(303, url('/profil', { ...req.ctx, ok: 'Profil enregistré.' }));
 }));
 r.post('/profil/password', need('student'), H(async (req, res) => {
-  const fail = (m) => res.redirect(url('/profil', { ...req.ctx, err: m }));
+  const fail = (m) => res.redirect(303, url('/profil', { ...req.ctx, err: m }));
   if (!verifyPassword(String(req.body.old_password || ''), req.user.password_hash)) return fail('Mot de passe actuel incorrect.');
   if (req.body.password !== req.body.password2) return fail('La confirmation ne correspond pas.');
   if (String(req.body.password || '').length < 6) return fail('Nouveau mot de passe : 6 caractères minimum.');
   await db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hashPassword(req.body.password), req.user.id);
-  res.redirect(url('/profil', { ...req.ctx, ok: 'Mot de passe changé.' }));
+  res.redirect(303, url('/profil', { ...req.ctx, ok: 'Mot de passe changé.' }));
 }));
 
 /* ------------------------------------------------------------------ */
@@ -828,8 +828,8 @@ r.get('/admin/etudiants', need('admin'), H(async (req, res) => {
 
 r.post('/admin/etudiants', need('admin'), H(async (req, res) => {
   const b = req.body;
-  for (const f of ['first_name', 'last_name', 'email', 'matricule']) if (!String(b[f] || '').trim()) return res.redirect(url('/admin/etudiants', { ...req.ctx, err: `Champ manquant : ${f}` }));
-  if (!emailRe.test(b.email)) return res.redirect(url('/admin/etudiants', { ...req.ctx, err: 'E-mail invalide' }));
+  for (const f of ['first_name', 'last_name', 'email', 'matricule']) if (!String(b[f] || '').trim()) return res.redirect(303, url('/admin/etudiants', { ...req.ctx, err: `Champ manquant : ${f}` }));
+  if (!emailRe.test(b.email)) return res.redirect(303, url('/admin/etudiants', { ...req.ctx, err: 'E-mail invalide' }));
   const generated = !String(b.password || '').trim();
   const pw = generated ? 'etudiant123' : String(b.password);
   const ui = await tx(async () => {
@@ -839,7 +839,7 @@ r.post('/admin/etudiants', need('admin'), H(async (req, res) => {
       .run(x.lastInsertRowid, b.matricule.trim(), asNum(b.program_id), asNum(b.level_id), null, asNum(b.academic_year_id) ?? (await db.prepare('SELECT id FROM academic_years WHERE is_current=1').get())?.id ?? null);
     return x;
   });
-  res.redirect(url('/admin/etudiants/' + (await db.prepare('SELECT id FROM students WHERE user_id=?').get(ui.lastInsertRowid)).id, { ...req.ctx, ok: 'Étudiant créé' + (generated ? ' — mot de passe initial : etudiant123' : ' — mot de passe : le vôtre') }));
+  res.redirect(303, url('/admin/etudiants/' + (await db.prepare('SELECT id FROM students WHERE user_id=?').get(ui.lastInsertRowid)).id, { ...req.ctx, ok: 'Étudiant créé' + (generated ? ' — mot de passe initial : etudiant123' : ' — mot de passe : le vôtre') }));
 }));
 
 r.get('/admin/etudiants/:id', need('admin'), H(async (req, res) => {
@@ -904,7 +904,7 @@ r.post('/admin/etudiants/:id', need('admin'), H(async (req, res) => {
   const s = await db.prepare('SELECT * FROM students WHERE id=?').get(Number(req.params.id));
   if (!s) throw notFound();
   const b = req.body;
-  if (b.toggle_active) { await db.prepare('UPDATE users SET is_active=1-is_active WHERE id=?').run(s.user_id); return res.redirect(url('/admin/etudiants/' + s.id, { ...req.ctx, ok: 'Compte mis à jour.' })); }
+  if (b.toggle_active) { await db.prepare('UPDATE users SET is_active=1-is_active WHERE id=?').run(s.user_id); return res.redirect(303, url('/admin/etudiants/' + s.id, { ...req.ctx, ok: 'Compte mis à jour.' })); }
   await tx(async () => {
     await db.prepare('UPDATE users SET first_name=COALESCE(?,first_name), last_name=COALESCE(?,last_name), email=COALESCE(?,email) WHERE id=?')
       .run(String(b.first_name || '').trim() || null, String(b.last_name || '').trim() || null, b.email ? String(b.email).trim().toLowerCase() : null, s.user_id);
@@ -912,13 +912,13 @@ r.post('/admin/etudiants/:id', need('admin'), H(async (req, res) => {
       .run(String(b.matricule || '').trim() || null, asNum(b.program_id), asNum(b.level_id), s.academic_year_id, s.id);
     if (String(b.reset_password || '').trim()) await db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hashPassword(b.reset_password), s.user_id);
   });
-  res.redirect(url('/admin/etudiants/' + s.id, { ...req.ctx, ok: 'Fiche enregistrée.' }));
+  res.redirect(303, url('/admin/etudiants/' + s.id, { ...req.ctx, ok: 'Fiche enregistrée.' }));
 }));
 r.post('/admin/etudiants/:id/delete', need('admin'), H(async (req, res) => {
-  if (req.body.confirm !== '1') return res.redirect(url('/admin/etudiants/' + req.params.id, { ...req.ctx, err: 'Cochez la confirmation de suppression.' }));
+  if (req.body.confirm !== '1') return res.redirect(303, url('/admin/etudiants/' + req.params.id, { ...req.ctx, err: 'Cochez la confirmation de suppression.' }));
   const s = await db.prepare('SELECT * FROM students WHERE id=?').get(Number(req.params.id));
   if (s) await db.prepare('DELETE FROM users WHERE id=?').run(s.user_id);
-  res.redirect(url('/admin/etudiants', { ...req.ctx, ok: 'Étudiant supprimé.' }));
+  res.redirect(303, url('/admin/etudiants', { ...req.ctx, ok: 'Étudiant supprimé.' }));
 }));
 r.post('/admin/etudiants/:id/official/:semId', need('admin'), H(async (req, res) => {
   const s = await db.prepare('SELECT * FROM students WHERE id=?').get(Number(req.params.id));
@@ -926,12 +926,12 @@ r.post('/admin/etudiants/:id/official/:semId', need('admin'), H(async (req, res)
   const sem = await db.prepare('SELECT * FROM semesters WHERE id=?').get(Number(req.params.semId));
   if (!sem) throw notFound('Semestre inconnu');
   const pub = await db.prepare('SELECT status FROM publications WHERE semester_id=?').get(sem.id);
-  if (pub?.status === 'locked') return res.redirect(url('/admin/etudiants/' + s.id, { ...req.ctx, err: 'Semestre verrouillé : déverrouillez-le avant de corriger.' }));
+  if (pub?.status === 'locked') return res.redirect(303, url('/admin/etudiants/' + s.id, { ...req.ctx, err: 'Semestre verrouillé : déverrouillez-le avant de corriger.' }));
   const courses = (await db.prepare(`SELECT c.id FROM courses c JOIN units u ON u.id=c.unit_id WHERE u.semester_id=?`).all(sem.id)).map((c) => c.id);
   const stmt = await db.prepare(`INSERT INTO grades (student_id,course_id,source,normal,rattrapage,updated_at) VALUES (?,?,'official',?,?,datetime('now'))
     ON CONFLICT(student_id,course_id,source) DO UPDATE SET normal=excluded.normal, rattrapage=excluded.rattrapage, updated_at=datetime('now')`);
   await tx(async () => { for (const cid of courses) await stmt.run(s.id, cid, score(req.body['n_' + cid] ?? ''), score(req.body['r_' + cid] ?? '')); });
-  res.redirect(url('/admin/etudiants/' + s.id, { ...req.ctx, ok: 'Notes officielles enregistrées (S' + sem.number + ').' }));
+  res.redirect(303, url('/admin/etudiants/' + s.id, { ...req.ctx, ok: 'Notes officielles enregistrées (S' + sem.number + ').' }));
 }));
 
 /* — Modèles de relevés — */
@@ -971,12 +971,12 @@ r.post('/admin/modeles', need('admin'), H(async (req, res) => {
   })();
   const info = await db.prepare('INSERT INTO templates (program_id,level_id,academic_year_id,name,rules_json) VALUES (?,?,?,?,?)')
     .run(asNum(b.program_id), asNum(b.level_id), asNum(b.academic_year_id), name, JSON.stringify({}));
-  res.redirect(url('/admin/modeles/' + info.lastInsertRowid, { ...req.ctx, ok: 'Modèle créé.' }));
+  res.redirect(303, url('/admin/modeles/' + info.lastInsertRowid, { ...req.ctx, ok: 'Modèle créé.' }));
 }));
 r.post('/admin/modeles/:id/delete', need('admin'), H(async (req, res) => {
-  if (req.body.confirm !== '1') return res.redirect(url('/admin/modeles/' + req.params.id, { ...req.ctx, err: 'Cochez la confirmation.' }));
+  if (req.body.confirm !== '1') return res.redirect(303, url('/admin/modeles/' + req.params.id, { ...req.ctx, err: 'Cochez la confirmation.' }));
   await db.prepare('DELETE FROM templates WHERE id=?').run(Number(req.params.id));
-  res.redirect(url('/admin/modeles', { ...req.ctx, ok: 'Modèle supprimé.' }));
+  res.redirect(303, url('/admin/modeles', { ...req.ctx, ok: 'Modèle supprimé.' }));
 }));
 
 const RULE_OPTIONS = {
@@ -1073,7 +1073,7 @@ r.get('/admin/modeles/:id', need('admin'), H(async (req, res) => {
 r.post('/admin/modeles/:id', need('admin'), H(async (req, res) => {
   await db.prepare(`UPDATE templates SET name=?, program_id=?, level_id=?, academic_year_id=?, updated_at=datetime('now') WHERE id=?`)
     .run(String(req.body.name || '').trim(), asNum(req.body.program_id), asNum(req.body.level_id), asNum(req.body.academic_year_id), Number(req.params.id));
-  res.redirect(url('/admin/modeles/' + req.params.id, { ...req.ctx, ok: 'Modèle enregistré.' }));
+  res.redirect(303, url('/admin/modeles/' + req.params.id, { ...req.ctx, ok: 'Modèle enregistré.' }));
 }));
 r.post('/admin/modeles/:id/rules', need('admin'), H(async (req, res) => {
   const t = await db.prepare('SELECT * FROM templates WHERE id=?').get(Number(req.params.id));
@@ -1088,26 +1088,26 @@ r.post('/admin/modeles/:id/rules', need('admin'), H(async (req, res) => {
     pass_threshold: asNum(req.body.pass_threshold) ?? cur.pass_threshold,
   };
   await db.prepare(`UPDATE templates SET rules_json=?, updated_at=datetime('now') WHERE id=?`).run(JSON.stringify(nextRules), t.id);
-  res.redirect(url('/admin/modeles/' + t.id, { ...req.ctx, ok: 'Règles de calcul enregistrées — tous les barèmes sont recalculés.' }));
+  res.redirect(303, url('/admin/modeles/' + t.id, { ...req.ctx, ok: 'Règles de calcul enregistrées — tous les barèmes sont recalculés.' }));
 }));
 r.post('/admin/modeles/:id/semesters', need('admin'), H(async (req, res) => {
   const number = asNum(req.body.number);
-  if (number == null) return res.redirect(url('/admin/modeles/' + req.params.id, { ...req.ctx, err: 'Numéro de semestre requis.' }));
+  if (number == null) return res.redirect(303, url('/admin/modeles/' + req.params.id, { ...req.ctx, err: 'Numéro de semestre requis.' }));
   const ord = (await db.prepare('SELECT COALESCE(MAX(ord),0)+1 o FROM semesters WHERE template_id=?').get(Number(req.params.id))).o;
   await db.prepare('INSERT INTO semesters (template_id,number,name,ects_expected,ord) VALUES (?,?,?,?,?)')
     .run(Number(req.params.id), number, String(req.body.name || '').trim() || `Semestre ${number}`, asNum(req.body.ects_expected) ?? 30, ord);
-  res.redirect(url('/admin/modeles/' + req.params.id, { ...req.ctx, ok: 'Semestre ajouté.' }));
+  res.redirect(303, url('/admin/modeles/' + req.params.id, { ...req.ctx, ok: 'Semestre ajouté.' }));
 }));
 r.post('/admin/semesters/:id', need('admin'), H(async (req, res) => {
   const sem = await db.prepare('SELECT * FROM semesters WHERE id=?').get(Number(req.params.id));
   await db.prepare('UPDATE semesters SET number=?, name=?, ects_expected=? WHERE id=?')
     .run(asNum(req.body.number) ?? sem.number, String(req.body.name || '').trim() || sem.name, asNum(req.body.ects_expected) ?? sem.ects_expected, sem.id);
-  res.redirect(url('/admin/modeles/' + sem.template_id, { ...req.ctx, ok: 'Semestre mis à jour.' }));
+  res.redirect(303, url('/admin/modeles/' + sem.template_id, { ...req.ctx, ok: 'Semestre mis à jour.' }));
 }));
 r.post('/admin/semesters/:id/delete', need('admin'), H(async (req, res) => {
   const sem = await db.prepare('SELECT * FROM semesters WHERE id=?').get(Number(req.params.id));
   await db.prepare('DELETE FROM semesters WHERE id=?').run(sem.id);
-  res.redirect(url('/admin/modeles/' + sem.template_id, { ...req.ctx, ok: 'Semestre supprimé.' }));
+  res.redirect(303, url('/admin/modeles/' + sem.template_id, { ...req.ctx, ok: 'Semestre supprimé.' }));
 }));
 r.post('/admin/semesters/:id/publication', need('admin'), H(async (req, res) => {
   const sem = await db.prepare('SELECT * FROM semesters WHERE id=?').get(Number(req.params.id));
@@ -1116,10 +1116,10 @@ r.post('/admin/semesters/:id/publication', need('admin'), H(async (req, res) => 
   const current = await db.prepare('SELECT * FROM publications WHERE semester_id=?').get(sem.id);
   if (action === 'draft') await db.prepare('DELETE FROM publications WHERE semester_id=?').run(sem.id);
   else if (action === 'lock') {
-    if (!current) return res.redirect(url('/admin/modeles/' + sem.template_id, { ...req.ctx, err: 'Publiez d’abord les résultats avant de les verrouiller.' }));
+    if (!current) return res.redirect(303, url('/admin/modeles/' + sem.template_id, { ...req.ctx, err: 'Publiez d’abord les résultats avant de les verrouiller.' }));
     await db.prepare(`UPDATE publications SET status='locked' WHERE semester_id=?`).run(sem.id);
   } else if (action === 'unlock') {
-    if (current?.status !== 'locked') return res.redirect(url('/admin/modeles/' + sem.template_id, { ...req.ctx, err: 'Ce semestre n’est pas verrouillé.' }));
+    if (current?.status !== 'locked') return res.redirect(303, url('/admin/modeles/' + sem.template_id, { ...req.ctx, err: 'Ce semestre n’est pas verrouillé.' }));
     await db.prepare(`UPDATE publications SET status='published' WHERE semester_id=?`).run(sem.id);
   } else {
     // publish : snapshot des résultats officiels de tous les étudiants du semestre
@@ -1139,37 +1139,37 @@ r.post('/admin/semesters/:id/publication', need('admin'), H(async (req, res) => 
       ON CONFLICT(semester_id) DO UPDATE SET status='published', published_by=excluded.published_by, published_at=datetime('now'), snapshot_json=excluded.snapshot_json`)
       .run(sem.id, req.user.id, JSON.stringify({ published: true, semester: snapshot }));
   }
-  res.redirect(url('/admin/modeles/' + sem.template_id, { ...req.ctx, ok: 'Publication : ' + action + ' ✓' }));
+  res.redirect(303, url('/admin/modeles/' + sem.template_id, { ...req.ctx, ok: 'Publication : ' + action + ' ✓' }));
 }));
 r.post('/admin/semesters/:id/units', need('admin'), H(async (req, res) => {
   const sem = await db.prepare('SELECT * FROM semesters WHERE id=?').get(Number(req.params.id));
   const ord = (await db.prepare('SELECT COALESCE(MAX(ord),0)+1 o FROM units WHERE semester_id=?').get(sem.id)).o;
   await db.prepare('INSERT INTO units (semester_id,code,name,ord) VALUES (?,?,?,?)').run(sem.id, String(req.body.code || 'UE').trim(), String(req.body.name || '').trim() || req.body.code, ord);
-  res.redirect(url('/admin/modeles/' + sem.template_id, { ...req.ctx, ok: 'UE ajoutée.' }));
+  res.redirect(303, url('/admin/modeles/' + sem.template_id, { ...req.ctx, ok: 'UE ajoutée.' }));
 }));
 r.post('/admin/units/:id/delete', need('admin'), H(async (req, res) => {
   const u = await db.prepare(`SELECT u.*, s.template_id FROM units u JOIN semesters s ON s.id=u.semester_id WHERE u.id=?`).get(Number(req.params.id));
   await db.prepare('DELETE FROM units WHERE id=?').run(u.id);
-  res.redirect(url('/admin/modeles/' + u.template_id, { ...req.ctx, ok: 'UE supprimée.' }));
+  res.redirect(303, url('/admin/modeles/' + u.template_id, { ...req.ctx, ok: 'UE supprimée.' }));
 }));
 r.post('/admin/units/:id/courses', need('admin'), H(async (req, res) => {
   const u = await db.prepare(`SELECT u.*, s.template_id FROM units u JOIN semesters s ON s.id=u.semester_id WHERE u.id=?`).get(Number(req.params.id));
-  if (!String(req.body.name || '').trim()) return res.redirect(url('/admin/modeles/' + u.template_id, { ...req.ctx, err: 'Nom de matière requis.' }));
+  if (!String(req.body.name || '').trim()) return res.redirect(303, url('/admin/modeles/' + u.template_id, { ...req.ctx, err: 'Nom de matière requis.' }));
   const ord = (await db.prepare('SELECT COALESCE(MAX(ord),0)+1 o FROM courses WHERE unit_id=?').get(u.id)).o;
   await db.prepare('INSERT INTO courses (unit_id,name,coefficient,credits,ord) VALUES (?,?,?,?,?)')
     .run(u.id, String(req.body.name).trim(), asNum(req.body.coefficient) ?? 1, asNum(req.body.credits) ?? 1, ord);
-  res.redirect(url('/admin/modeles/' + u.template_id, { ...req.ctx, ok: 'Matière ajoutée.' }));
+  res.redirect(303, url('/admin/modeles/' + u.template_id, { ...req.ctx, ok: 'Matière ajoutée.' }));
 }));
 r.post('/admin/courses/:id', need('admin'), H(async (req, res) => {
   const c = await db.prepare(`SELECT c.*, s.template_id FROM courses c JOIN units u ON u.id=c.unit_id JOIN semesters s ON s.id=u.semester_id WHERE c.id=?`).get(Number(req.params.id));
   await db.prepare('UPDATE courses SET name=?, coefficient=?, credits=? WHERE id=?')
     .run(String(req.body.name || '').trim() || c.name, asNum(req.body.coefficient) ?? c.coefficient, asNum(req.body.credits) ?? c.credits, c.id);
-  res.redirect(url('/admin/modeles/' + c.template_id, { ...req.ctx, ok: 'Matière mise à jour — moyennes recalculées.' }));
+  res.redirect(303, url('/admin/modeles/' + c.template_id, { ...req.ctx, ok: 'Matière mise à jour — moyennes recalculées.' }));
 }));
 r.post('/admin/courses/:id/delete', need('admin'), H(async (req, res) => {
   const c = await db.prepare(`SELECT c.id, s.template_id FROM courses c JOIN units u ON u.id=c.unit_id JOIN semesters s ON s.id=u.semester_id WHERE c.id=?`).get(Number(req.params.id));
   await db.prepare('DELETE FROM courses WHERE id=?').run(c.id);
-  res.redirect(url('/admin/modeles/' + c.template_id, { ...req.ctx, ok: 'Matière supprimée.' }));
+  res.redirect(303, url('/admin/modeles/' + c.template_id, { ...req.ctx, ok: 'Matière supprimée.' }));
 }));
 
 /* — Référentiels — */
@@ -1218,23 +1218,23 @@ r.post('/admin/ref/:key', need('admin'), H(async (req, res) => {
   const uniq = [...new Set(cols)];
   await db.prepare(`INSERT INTO ${conf.table} (${uniq.join(',')}) VALUES (${uniq.map(() => '?').join(',')})`)
     .run(...uniq.map((c) => { const v = req.body[c]; return v === '' || v == null ? null : /^-?\d+(\.\d+)?$/.test(String(v).trim()) ? Number(v) : String(v).trim(); }));
-  res.redirect(url('/admin/referentiels', { ...req.ctx, ok: 'Ligne ajoutée.' }));
+  res.redirect(303, url('/admin/referentiels', { ...req.ctx, ok: 'Ligne ajoutée.' }));
 }));
 r.post('/admin/ref/:key/:id', need('admin'), H(async (req, res) => {
   const conf = REF_TABLES[req.params.key]; if (!conf) throw notFound();
   const sets = conf.cols.map(([c]) => c).filter((c) => req.body[c] !== undefined);
   if (sets.length) await db.prepare(`UPDATE ${conf.table} SET ${sets.map((c) => c + '=?').join(',')} WHERE id=?`)
     .run(...sets.map((c) => { const v = req.body[c]; return v === '' || v == null ? null : /^-?\d+(\.\d+)?$/.test(String(v).trim()) ? Number(v) : String(v).trim(); }), Number(req.params.id));
-  res.redirect(url('/admin/referentiels', { ...req.ctx, ok: 'Ligne mise à jour.' }));
+  res.redirect(303, url('/admin/referentiels', { ...req.ctx, ok: 'Ligne mise à jour.' }));
 }));
 r.post('/admin/ref/years/:id/current', need('admin'), H(async (req, res) => {
   await tx(async () => { await db.prepare('UPDATE academic_years SET is_current=0').run(); await db.prepare('UPDATE academic_years SET is_current=1 WHERE id=?').run(Number(req.params.id)); });
-  res.redirect(url('/admin/referentiels', { ...req.ctx, ok: 'Année courante définie.' }));
+  res.redirect(303, url('/admin/referentiels', { ...req.ctx, ok: 'Année courante définie.' }));
 }));
 r.post('/admin/ref/:key/:id/delete', need('admin'), H(async (req, res) => {
   const conf = REF_TABLES[req.params.key]; if (!conf) throw notFound();
-  try { await db.prepare(`DELETE FROM ${conf.table} WHERE id=?`).run(Number(req.params.id)); } catch { return res.redirect(url('/admin/referentiels', { ...req.ctx, err: 'Suppression impossible : cette ligne est référencée ailleurs.' })); }
-  res.redirect(url('/admin/referentiels', { ...req.ctx, ok: 'Ligne supprimée.' }));
+  try { await db.prepare(`DELETE FROM ${conf.table} WHERE id=?`).run(Number(req.params.id)); } catch { return res.redirect(303, url('/admin/referentiels', { ...req.ctx, err: 'Suppression impossible : cette ligne est référencée ailleurs.' })); }
+  res.redirect(303, url('/admin/referentiels', { ...req.ctx, ok: 'Ligne supprimée.' }));
 }));
 
 /* ------------------------------------------------------------------ */
@@ -1316,9 +1316,9 @@ r.get('/admin/import', need('admin'), H(async (req, res) => {
 }));
 
 r.post('/admin/import/upload', need('admin'), upload.single('file'), H(async (req, res) => {
-  if (!req.file) return res.redirect(url('/admin/import', { ...req.ctx, err: 'Aucun fichier reçu.' }));
+  if (!req.file) return res.redirect(303, url('/admin/import', { ...req.ctx, err: 'Aucun fichier reçu.' }));
   const id = await saveUpload(req.file.originalname, req.file.buffer);
-  res.redirect(url('/admin/import', { t: req.ctx.t, th: req.ctx.th, file: id, name: req.file.originalname }));
+  res.redirect(303, url('/admin/import', { t: req.ctx.t, th: req.ctx.th, file: id, name: req.file.originalname }));
 }));
 
 async function analyzeImport({ file, sheet, mode, target, mapping, source = 'official' }) {
@@ -1399,7 +1399,7 @@ r.post('/admin/import/analyze', need('admin'), H(async (req, res) => {
 }));
 
 r.post('/admin/import/commit', need('admin'), H(async (req, res) => {
-  if (req.body.confirm !== '1') return res.redirect(url('/admin/import', { ...req.ctx, err: 'Confirmation requise pour écrire dans la base.' }));
+  if (req.body.confirm !== '1') return res.redirect(303, url('/admin/import', { ...req.ctx, err: 'Confirmation requise pour écrire dans la base.' }));
   const b = req.body;
   const onConflict = b.onConflict === 'skip' ? 'skip' : 'overwrite';
   const p = (await safeFile(b.file)).content;
@@ -1470,7 +1470,7 @@ r.post('/admin/import/commit', need('admin'), H(async (req, res) => {
     summary = `${written} note(s) importée(s) · ${skipped} ignorée(s) · ${unmatched} sans correspondance · ${createdCourses} matière(s) créée(s)`;
   }
   await dropUpload(b.file);                       /* import terminé : le classeur n'a plus à rester stocké */
-  res.redirect(url('/admin/import', { t: req.ctx.t, th: req.ctx.th, ok: summary }));
+  res.redirect(303, url('/admin/import', { t: req.ctx.t, th: req.ctx.th, ok: summary }));
 }));
 
 /* — Fichiers d'export (admin) + divers — */
@@ -1552,7 +1552,7 @@ r.post('/admin/emploi/add', need('admin'), H(async (req, res) => {
   const room = String(req.body.room || '').trim().slice(0, 60) || null;
   await db.prepare('INSERT INTO schedule_slots (class_id, semester_id, course_id, title, day, start, end, room) VALUES (?,?,?,?,?,?,?,?)')
     .run(clazz, sem, courseId, title, day, start, end, room);
-  res.redirect(url('/admin/emploi', { ...req.ctx, clazz, sem, ok: 'Créneau ajouté' }));
+  res.redirect(303, url('/admin/emploi', { ...req.ctx, clazz, sem, ok: 'Créneau ajouté' }));
 }));
 
 r.post('/admin/emploi/del', need('admin'), H(async (req, res) => {
@@ -1560,7 +1560,7 @@ r.post('/admin/emploi/del', need('admin'), H(async (req, res) => {
   const rw = await db.prepare('SELECT id FROM schedule_slots WHERE id = ?').get(id);
   if (!rw) throw notFound('Créneau introuvable');
   await db.prepare('DELETE FROM schedule_slots WHERE id = ?').run(id);
-  res.redirect(url('/admin/emploi', { ...req.ctx, clazz, sem, ok: 'Créneau supprimé' }));
+  res.redirect(303, url('/admin/emploi', { ...req.ctx, clazz, sem, ok: 'Créneau supprimé' }));
 }));
 
 export default r;
