@@ -106,14 +106,14 @@ export function page(ctx, { title = 'MonRelevé', body = '', tabs = null, adminT
       if (!disk || !a) return;
       if (a.classList.contains('pb-send')) { disk.style.opacity = '0'; return; }
       var bar = n.getBoundingClientRect();
-      var item = a.getBoundingClientRect();
+      var icon = a.querySelector('svg') || a;
+      var iconBox = icon.getBoundingClientRect();
       var diskBox = disk.getBoundingClientRect();
-      /* left fournit déjà le petit retrait intérieur de la boule :
-         on le retire pour que son centre coïncide exactement avec celui de l'icône. */
+      /* Le centre de la boule suit la boîte réelle de l'icône, pas seulement celle du bouton. */
       var baseLeft = parseFloat(getComputedStyle(disk).left) || 0;
       disk.style.opacity = '1';
-      disk.style.top = (item.top - bar.top + (item.height - diskBox.height) / 2) + 'px';
-      disk.style.transform = 'translateX(' + (item.left - bar.left + (item.width - diskBox.width) / 2 - baseLeft) + 'px)';
+      disk.style.top = (iconBox.top - bar.top + (iconBox.height - diskBox.height) / 2) + 'px';
+      disk.style.transform = 'translateX(' + (iconBox.left - bar.left + (iconBox.width - diskBox.width) / 2 - baseLeft) + 'px)';
     }
     var current = n.querySelector('a.pillbtn.cur');
     if (current) requestAnimationFrame(function () { place(current); });
