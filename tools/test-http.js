@@ -60,6 +60,8 @@ const lienPartage = await appel('/accueil?t=' + encodeURIComponent(sessionAdmin)
 verifier('lien étudiant partagé sans cookie → connexion requise',
   [301, 302, 303].includes(lienPartage.statut) && /\/login(?:\?|$)/.test(lienPartage.emplacement),
   `${lienPartage.statut} ${lienPartage.emplacement}`);
+const cookieUtiliseCommeApi = await fetch(BASE + '/api/auth/me', { headers: { Authorization: `Bearer ${sessionAdmin}` } });
+verifier('jeton de cookie HTML refusé par l API', cookieUtiliseCommeApi.status === 403, `statut ${cookieUtiliseCommeApi.status}`);
 
 for (const [chemin, attendu] of [
   ['/accueil', /annonce|Annonces/i],

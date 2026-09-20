@@ -82,12 +82,18 @@ const THEME_JS = `<script>
 </script>`;
 
 const login = async (email, password) => {
-  const r = await fetch(`${BASE}/api/auth/login`, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ email, password }),
+  /* L'export visite l'interface HTML avec son cookie, jamais avec un jeton dans l'URL. */
+  const r = await fetch(`${BASE}/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ email, password }),
+    redirect: 'manual',
   });
-  if (!r.ok) throw new Error(`login ${email} → HTTP ${r.status}`);
-  return (await r.json()).token;
+  if (![301, 302, 303].includes(r.status)) throw new Error(`login ${email} → HTTP ${r.status}`);
+  const setCookies = r.headers.getSetCookie ? r.headers.getSetCookie() : [r.headers.get('set-cookie')].filter(Boolean);
+  const session = setCookies.map((c) => c.split(';')[0]).find((c) => /^mrt=/.test(c));
+  if (!session) throw new Error(`login ${email} → cookie de session absent`);
+  return session;
 };
 
 /* clé canonique d'une URL interne : chemin + requête triée, t/th retirés */
@@ -133,9 +139,11 @@ async function main() {
   let guard = 0;
   while (queue.length && guard++ < 30) {
     const entry = queue.shift();
-    const tok = entry.who ? tokens[entry.who] : null;
-    const full = entry.url + (tok ? (entry.url.includes('?') ? '&' : '?') + 't=' + tok : '');
-    const r = await fetch(BASE + full, { redirect: 'follow' });
+    const session = entry.who ? tokens[entry.who] : null;
+    const r = await fetch(BASE + entry.url, {
+      headers: session ? { Cookie: session } : {},
+      redirect: 'follow',
+    });
     if (!r.ok) { console.error(`✗ ${entry.url} → HTTP ${r.status}`); continue; }
     const html = await r.text();
     fetched.push({ ...entry, html });

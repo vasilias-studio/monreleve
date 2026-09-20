@@ -187,7 +187,7 @@ r.post('/login', H(async (req, res) => {
     return res.redirect(303, '/login?err=' + encodeURIComponent('Identifiants incorrects.'));
   }
   if (!user.is_active) return res.redirect(303, '/login?err=' + encodeURIComponent('Compte désactivé — contactez l’administration.'));
-  const t = signToken(user);
+  const t = signToken(user, 'html');
   res.cookie('mrt', t, { httpOnly: true, sameSite: 'lax', maxAge: 30 * 864e5 });
   // Après un POST, 303 impose une nouvelle requête GET (Vercel peut conserver POST avec 307).
   res.redirect(303, url(user.role === 'admin' ? '/admin' : '/accueil', { t, th: req.ctx.th }));
@@ -233,7 +233,7 @@ r.post('/register', H(async (req, res) => {
   let yearId = asNum(b.academic_year_id); if (!yearId) yearId = (await db.prepare('SELECT id FROM academic_years WHERE is_current=1').get())?.id ?? null;
   await db.prepare('INSERT INTO students (user_id,matricule,program_id,level_id,academic_year_id) VALUES (?,?,?,?,?)')
     .run(ui.lastInsertRowid, String(b.matricule).trim(), asNum(b.program_id), asNum(b.level_id), yearId);
-  const t = signToken(await db.prepare('SELECT * FROM users WHERE id=?').get(ui.lastInsertRowid));
+  const t = signToken(await db.prepare('SELECT * FROM users WHERE id=?').get(ui.lastInsertRowid), 'html');
   res.cookie('mrt', t, { httpOnly: true, sameSite: 'lax', maxAge: 30 * 864e5 });
   // Après un POST, 303 évite que le navigateur renvoie le formulaire sur /accueil.
   res.redirect(303, url('/accueil', { t, th: req.ctx.th }));

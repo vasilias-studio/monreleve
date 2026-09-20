@@ -32,8 +32,8 @@ const SECRET = (() => {
 
 export function hashPassword(pw) { return bcrypt.hashSync(pw, 10); }
 export function verifyPassword(pw, hash) { return bcrypt.compareSync(pw, hash); }
-export function signToken(user) {
-  return jwt.sign({ uid: user.id, role: user.role }, SECRET, { expiresIn: '30d' });
+export function signToken(user, kind = 'api') {
+  return jwt.sign({ uid: user.id, role: user.role, kind }, SECRET, { expiresIn: '30d' });
 }
 
 /** Erreur HTTP typée, sérialisée proprement par le handler d'erreur. */
@@ -51,6 +51,7 @@ export async function authRequired(req, _res, next) {
   if (!token) return next(forbidden('Authentification requise'));
   try {
     const payload = jwt.verify(token, SECRET);
+    if (payload.kind !== 'api') return next(forbidden('Jeton API invalide'));
     const user = await db.prepare('SELECT * FROM users WHERE id=? AND is_active=1').get(payload.uid);
     if (!user) return next(forbidden('Compte inactif ou supprimé'));
     req.user = user;
@@ -65,6 +66,7 @@ export async function readToken(token) {
   if (!token) return null;
   try {
     const payload = jwt.verify(String(token), SECRET);
+    if (payload.kind !== 'html') return null;
     return await db.prepare('SELECT * FROM users WHERE id=? AND is_active=1').get(payload.uid) || null;
   } catch { return null; }
 }
