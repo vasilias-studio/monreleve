@@ -89,6 +89,13 @@ ordinateur, ou par glisser-déposer). En résumé :
 GITHUB_TOKEN=votre_jeton bash tools/github-publish.sh --name monreleve
 ```
 
+Deux archives sont prêtes dans le dossier de travail, pour ne rien reconstituer à la main :
+
+- **`monreleve-depot-git.zip`** : le dépôt complet (fichiers **et** historique Git). Décompressez-le,
+  puis `git remote add origin https://github.com/…/monreleve.git` et `git push -u origin main`.
+- **`monreleve-site.zip`** : les mêmes fichiers sans historique (si vous préférez repartir d'un seul
+  commit : `git init`, `git add -A`, `git commit -m "MonRelevé"`).
+
 ---
 
 ## Étape 4 — Déployer sur Vercel
