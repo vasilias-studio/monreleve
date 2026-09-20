@@ -8,6 +8,10 @@ import db, { tx } from './db.js';
 
 export async function ensureSchedule() {
   if ((await db.prepare('SELECT COUNT(*) n FROM schedule_slots').get()).n > 0) return 0;
+  /* Un calendrier vidé par l'administration doit rester vide après un redémarrage.
+     Le remplissage de démonstration reste disponible explicitement via
+     tools/seed-emploi.js, jamais au démarrage d'une instance Vercel. */
+  if (process.env.SEED_DEMO_SCHEDULE !== '1') return 0;
   return await tx(async () => {
     let made = 0;
     const templates = await db.prepare(`
