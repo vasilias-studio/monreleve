@@ -1580,7 +1580,6 @@ r.get('/admin/emploi', need('admin'), H(async (req, res) => {
     ORDER BY COALESCE(sl.slot_date, ?), sl.day, sl.start`).all(owner.id, selectedDate, weekday, selectedDate);
 
   const levelOptions = levels.map((l) => `<option value="${l.id}" ${l.id === levelId ? 'selected' : ''}>${esc(l.name)}</option>`).join('');
-  const semesterOptions = semesters.map((s) => `<option value="${s.id}">S${s.number} · ${esc(s.name)}</option>`).join('');
   const courseOptions = courses.length
     ? courses.map((c) => `<option value="${c.id}">S${c.semester_number} · ${esc(c.ucode ? c.ucode + ' · ' : '')}${esc(c.name)}</option>`).join('')
     : '<option value="">Aucune matière — utilisez un intitulé libre</option>';
@@ -1597,7 +1596,6 @@ r.get('/admin/emploi', need('admin'), H(async (req, res) => {
     <p class="tiny muted" style="margin:-4px 0 12px">Date sélectionnée : <b>${esc(adminDateLabel(selectedDate))}</b>. Les matières proposées regroupent tous les semestres du niveau, notamment S3 et S4.</p>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px">
       <div class="field" style="grid-column:span 2"><label>Matière du niveau — tous les semestres</label><select class="input" name="course_id"><option value="">— Intitulé libre —</option>${courseOptions}</select></div>
-      <div class="field"><label>Semestre si intitulé libre</label><select class="input" name="semester_id">${semesterOptions || '<option value="">— Aucun semestre —</option>'}</select></div>
       <div class="field"><label>ou intitulé libre</label><input class="input" name="title" placeholder="Examen, TD…"/></div>
       <div class="field"><label>Début</label><input class="input" type="time" name="start" value="08:00" required/></div>
       <div class="field"><label>Fin</label><input class="input" type="time" name="end" value="10:00" required/></div>
@@ -1627,7 +1625,7 @@ r.post('/admin/emploi/add', need('admin'), H(async (req, res) => {
   if (!/^\d{2}:\d{2}$/.test(String(req.body.start || '')) || !/^\d{2}:\d{2}$/.test(String(req.body.end || '')) || String(req.body.end) <= String(req.body.start)) throw badRequest('Horaires invalides : format HH:MM, fin après début');
   const start = String(req.body.start); const end = String(req.body.end);
   const courseId = req.body.course_id ? Number(req.body.course_id) : null;
-  let semesterId = Number(req.body.semester_id) || null;
+  let semesterId = null;
   if (courseId) {
     const course = await db.prepare(`SELECT c.id, s.id AS semester_id
       FROM courses c JOIN units u ON u.id=c.unit_id JOIN semesters s ON s.id=u.semester_id
@@ -1636,9 +1634,14 @@ r.post('/admin/emploi/add', need('admin'), H(async (req, res) => {
     if (!course) throw badRequest('Matière inconnue pour le niveau sélectionné');
     semesterId = course.semester_id;
   } else {
+    /* Un intitulé libre reste rattaché à une structure valide, mais le semestre
+       est résolu automatiquement puisque ce choix n'est plus exposé. */
     const sem = await db.prepare(`SELECT s.id FROM semesters s JOIN templates t ON t.id=s.template_id
-      WHERE s.id=? AND t.level_id=? AND t.program_id=?`).get(semesterId, owner.level_id, owner.program_id);
-    if (!sem) throw badRequest('Choisissez un semestre pour l’intitulé libre');
+      WHERE t.level_id=? AND t.program_id=?
+      ORDER BY CASE WHEN t.academic_year_id=(SELECT id FROM academic_years WHERE is_current=1 LIMIT 1) THEN 0 ELSE 1 END,
+        s.ord, s.number, s.id LIMIT 1`).get(owner.level_id, owner.program_id);
+    if (!sem) throw badRequest('Aucun semestre configuré pour ce niveau');
+    semesterId = sem.id;
   }
   const title = courseId ? null : String(req.body.title || '').trim().slice(0, 120);
   if (!courseId && !title) throw badRequest('Choisissez une matière ou saisissez un intitulé libre');
