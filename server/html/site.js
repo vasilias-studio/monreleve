@@ -658,40 +658,66 @@ const renderArchivesPage = async (req, res) => {
     if (!unique.has(String(course.id))) unique.set(String(course.id), { semester, unit, course });
   }
   const subjects = [...unique.values()];
-  const subjectsHtml = subjects.length ? subjects.map(({ semester, unit, course }) => `<article class="archive-subject card">
+  const subjectsHtml = subjects.length ? subjects.map(({ semester, unit, course }) => {
+    const searchText = [`S${semester.number}`, semester.name, unit.code, unit.name, course.code, course.name].filter(Boolean).join(' ');
+    return `<article class="archive-subject card" data-archive-search="${esc(searchText)}">
       <div class="row spread" style="gap:8px;align-items:flex-start"><span class="chip gray">S${semester.number} · ${esc(unit.code)}</span><span class="tiny muted">PDF</span></div>
       <h3>${esc(course.name)}</h3>
       <p class="small muted">${esc(unit.name)}${course.code ? ` · ${esc(course.code)}` : ''}</p>
       <a class="btn sm" style="width:100%;text-decoration:none;text-align:center" href="${url(`/archives/sujets/${encodeURIComponent(course.id)}.pdf`, req.ctx)}">Télécharger le sujet</a>
-    </article>`).join('') : '<div class="empty">Aucun sujet de révision disponible pour votre modèle.</div>';
+    </article>`;
+  }).join('') : '<div class="empty">Aucun sujet de révision disponible pour votre modèle.</div>';
   const semestersHtml = d.personal.semesters.map((s) => `<div class="archive-semester card">
       <div class="row spread"><b>S${s.number} — ${esc(s.name)}</b><span class="chip ${s.average == null ? 'gray' : s.average >= 10 ? 'ok' : 'warn'}">${fmt(s.average)}/20</span></div>
       <div class="small muted" style="margin-top:6px">${fmt(s.creditsEarned, 0)} / ${fmt(s.ectsExpected || 0, 0)} ECTS · ${s.units.reduce((n, u) => n + u.courses.length, 0)} matières</div>
     </div>`).join('');
-  const officialActions = d.officialVisible.length ? `<a class="btn sm ghost" style="text-decoration:none;text-align:center" href="${url('/mon-releve.pdf', { ...req.ctx, source: 'official' })}">Résultats officiels PDF</a>
-      <a class="btn sm ghost" style="text-decoration:none;text-align:center" href="${url('/mon-releve.xlsx', { ...req.ctx, source: 'official' })}">Résultats officiels Excel</a>` : '';
   const body = `<div class="archive-intro">
-      <span class="eyebrow">Ressources étudiantes</span>
       <h1>Archives</h1>
-      <p>Retrouvez vos résultats exportables et téléchargez les sujets de révision associés à votre formation.</p>
+      <form class="archive-search" role="search" onsubmit="return false" autocomplete="off">
+        <label class="sr-only" for="archive-search-input">Rechercher dans les archives</label>
+        <div class="archive-search-row">
+          <input class="input" id="archive-search-input" type="search" placeholder="Rechercher une matière, une UE ou un semestre" aria-controls="archive-subjects-list"/>
+          <button class="btn sm ghost" id="archive-search-clear" type="button" hidden>Effacer</button>
+        </div>
+        <div class="tiny muted" id="archive-search-status" aria-live="polite">${subjects.length} matière${subjects.length > 1 ? 's' : ''}</div>
+      </form>
     </div>
-    <section class="card archive-downloads" aria-labelledby="archive-documents-title">
-      <div class="section-title"><h2 id="archive-documents-title">Mes documents</h2><span class="tiny muted">Accès privé</span></div>
-      <div class="archive-actions">
-        <a class="btn sm" style="text-decoration:none;text-align:center" href="${url('/mon-releve.pdf', { ...req.ctx, source: 'personal' })}">Mes notes PDF</a>
-        <a class="btn sm ghost" style="text-decoration:none;text-align:center" href="${url('/mon-releve.xlsx', { ...req.ctx, source: 'personal' })}">Mes notes Excel</a>
-        ${officialActions}
-      </div>
-    </section>
     <section class="archive-section" aria-labelledby="archive-subjects-title">
       <div class="section-title"><h2 id="archive-subjects-title">Sujets de révision</h2><span class="tiny muted">${subjects.length} matière${subjects.length > 1 ? 's' : ''}</span></div>
-      <p class="small muted archive-note">Chaque sujet est généré pour une matière de votre modèle et reste protégé par votre connexion.</p>
-      <div class="archive-subject-grid">${subjectsHtml}</div>
+      <div class="archive-subject-grid" id="archive-subjects-list">${subjectsHtml}</div>
+      <div class="empty" id="archive-search-empty" hidden>Aucun sujet ne correspond à votre recherche.</div>
     </section>
     <section class="archive-section" aria-labelledby="archive-semesters-title">
       <div class="section-title"><h2 id="archive-semesters-title">Semestres archivés</h2><span class="tiny muted">Synthèse</span></div>
       <div class="archive-semester-grid">${semestersHtml}</div>
-    </section>`;
+    </section>
+    <script>
+      (function () {
+        var input = document.getElementById('archive-search-input');
+        var clear = document.getElementById('archive-search-clear');
+        var status = document.getElementById('archive-search-status');
+        var empty = document.getElementById('archive-search-empty');
+        var cards = Array.prototype.slice.call(document.querySelectorAll('[data-archive-search]'));
+        if (!input) return;
+        var normalize = function (value) {
+          return String(value || '').toLocaleLowerCase('fr-FR').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
+        };
+        var filter = function () {
+          var term = normalize(input.value.trim());
+          var visible = 0;
+          cards.forEach(function (card) {
+            var match = !term || normalize(card.getAttribute('data-archive-search')).indexOf(term) !== -1;
+            card.hidden = !match;
+            if (match) visible += 1;
+          });
+          clear.hidden = !input.value;
+          empty.hidden = visible !== 0 || cards.length === 0;
+          status.textContent = term ? visible + ' résultat' + (visible > 1 ? 's' : '') : cards.length + ' matière' + (cards.length > 1 ? 's' : '');
+        };
+        input.addEventListener('input', filter);
+        clear.addEventListener('click', function () { input.value = ''; filter(); input.focus(); });
+      })();
+    </script>`;
   res.send(stuPage(req, 'Archives', body));
 };
 
