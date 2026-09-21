@@ -632,6 +632,11 @@ body.route-saisie .saisie-top-download { margin-top: 10px; }
 .archive-search-row .input { flex: 1 1 auto; min-width: 0; }
 .archive-filter-button { flex: 0 0 40px; width: 40px; height: 40px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
 .archive-filter-button svg { width: 18px; height: 18px; }
+.archive-filter-menu { margin-top: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 18px; background: var(--surface); }
+.archive-filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 10px; }
+.archive-filter-grid label { color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.archive-filter-grid .input { display: block; margin-top: 5px; font-size: 12px; padding: 9px 10px; text-transform: none; letter-spacing: normal; }
+.archive-filter-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; margin-top: 12px; }
 .archive-search .tiny { display: block; margin-top: 7px; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .archive-subject-grid,
@@ -645,7 +650,8 @@ body.route-saisie .saisie-top-download { margin-top: 10px; }
 .archive-semester { padding: 14px; }
 body.route-archives .card { border-radius: 22px; }
 [data-theme="dark"] body.route-archives .archive-subject,
-[data-theme="dark"] body.route-archives .archive-semester { background: #1E1C19; }
+[data-theme="dark"] body.route-archives .archive-semester,
+[data-theme="dark"] body.route-archives .archive-filter-menu { background: #1E1C19; }
 body.route-messages main { max-width: 720px; }
 body.route-calendrier main { max-width: 680px; }
 body.route-profil main { max-width: 620px; }

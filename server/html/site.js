@@ -593,23 +593,45 @@ r.post('/saisie/:semId', need('student'), H(async (req, res) => {
 
 /* ------------------------------------------------------------------ */
 /* Archives : sujets de révision protégés par la session étudiante       */
+/* Tous les modèles, niveaux et filières alimentent le même catalogue.  */
 /* ------------------------------------------------------------------ */
-const revisionCourse = (d, wantedId) => {
-  const id = String(wantedId);
-  for (const semester of d.personal.semesters || []) {
-    for (const unit of semester.units || []) {
-      const course = (unit.courses || []).find((c) => String(c.id) === id);
-      if (course) return { semester, unit, course };
-    }
-  }
-  return null;
-};
 const fileSlug = (value) => String(value || 'sujet').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase().slice(0, 70) || 'sujet';
 const normalizeArchiveSearch = (value) => String(value || '').toLocaleLowerCase('fr-FR').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+const ARCHIVE_KINDS = {
+  examen: { label: 'Examen', pdfLabel: 'SUJET D’EXAMEN' },
+  rattrapage: { label: 'Ancien rattrapage', pdfLabel: 'ANCIEN SUJET DE RATTRAPAGE' },
+};
 
-/** Génère à la demande un sujet PDF pour une matière autorisée par le modèle de l'étudiant. */
-async function buildRevisionSubjectPdf({ template, semester, unit, course }) {
-  const doc = new PDFDocument({ size: 'A4', margin: 48, info: { Title: `Sujet de révision — ${course.name}`, Author: 'MonRelevé' } });
+/** Catalogue commun : un étudiant peut consulter les sujets de tous les modèles. */
+async function loadArchiveCatalog() {
+  const templates = await db.prepare(`SELECT t.*, p.name AS program_name, l.name AS level_name, y.label AS year_label
+    FROM templates t JOIN programs p ON p.id=t.program_id JOIN levels l ON l.id=t.level_id
+    LEFT JOIN academic_years y ON y.id=t.academic_year_id
+    ORDER BY y.start_year DESC, l.ord, p.name, t.name`).all();
+  const documents = [];
+  const semesters = [];
+  for (const template of templates) {
+    const tree = await loadTemplateTree(template.id);
+    for (const semester of tree) {
+      semesters.push({ template, semester });
+      for (const unit of semester.units || []) for (const course of unit.courses || []) {
+        for (const kind of Object.keys(ARCHIVE_KINDS)) documents.push({ template, semester, unit, course, kind });
+      }
+    }
+  }
+  return { templates, documents, semesters };
+}
+
+const archiveDocumentText = (doc) => [
+  `S${doc.semester.number}`, doc.semester.name, doc.unit.code, doc.unit.name, doc.course.code, doc.course.name,
+  doc.template.program_name, doc.template.level_name, doc.template.year_label, ARCHIVE_KINDS[doc.kind]?.label,
+].filter(Boolean).join(' ');
+const optionList = (values, selected) => `<option value="">Tous</option>${values.map((value) => `<option value="${esc(value)}"${String(value) === String(selected) ? ' selected' : ''}>${esc(value)}</option>`).join('')}`;
+
+/** Génère à la demande un sujet PDF pour une matière et un modèle du catalogue. */
+async function buildRevisionSubjectPdf({ template, semester, unit, course, kind = 'examen' }) {
+  const kindMeta = ARCHIVE_KINDS[kind] || ARCHIVE_KINDS.examen;
+  const doc = new PDFDocument({ size: 'A4', margin: 48, info: { Title: `${kindMeta.label} — ${course.name}`, Author: 'MonRelevé' } });
   const chunks = [];
   return new Promise((resolve, reject) => {
     doc.on('data', (chunk) => chunks.push(chunk));
@@ -621,20 +643,23 @@ async function buildRevisionSubjectPdf({ template, semester, unit, course }) {
     doc.rect(0, 0, 595.28, 841.89).fill(paper);
     doc.fillColor(copper).roundedRect(48, 46, 18, 18, 4).fill();
     doc.fillColor(ink).font('Helvetica-Bold').fontSize(10).text('MONRELEVÉ', 74, 50);
-    doc.fillColor('#8A857C').font('Helvetica').fontSize(8).text('ARCHIVES · SUJET DE RÉVISION', 48, 88);
+    doc.fillColor('#8A857C').font('Helvetica').fontSize(8).text(`ARCHIVES · ${kindMeta.pdfLabel}`, 48, 88);
     doc.fillColor(ink).font('Helvetica-Bold').fontSize(25).text(course.name, 48, 112, { width: 495 });
     doc.fillColor('#8A857C').font('Helvetica').fontSize(10).text(`${course.code || 'Matière'}  ·  S${semester.number} — ${semester.name}  ·  ${unit.code} — ${unit.name}`, 48, 170, { width: 495 });
-    doc.moveTo(48, 198).lineTo(547, 198).lineWidth(1).strokeColor(copper).stroke();
-    doc.fillColor(ink).font('Helvetica-Bold').fontSize(13).text('Consignes', 48, 220);
-    doc.fillColor(ink).font('Helvetica').fontSize(10).text('Durée conseillée : 1 h 30 · Aucun document, sauf indication de votre enseignant. Répondez de façon structurée et justifiez vos méthodes.', 48, 245, { width: 495, lineGap: 4 });
+    doc.fillColor('#8A857C').font('Helvetica').fontSize(9).text(`${template.program_name || 'Filière'}  ·  ${template.level_name || 'Niveau'}  ·  ${template.year_label || 'Année universitaire'}`, 48, 188, { width: 495 });
+    doc.moveTo(48, 211).lineTo(547, 211).lineWidth(1).strokeColor(copper).stroke();
+    doc.fillColor(ink).font('Helvetica-Bold').fontSize(13).text('Consignes', 48, 233);
+    doc.fillColor(ink).font('Helvetica').fontSize(10).text(kind === 'rattrapage'
+      ? 'Durée conseillée : 1 h 30 · Ancien sujet de rattrapage à utiliser comme entraînement. Justifiez vos méthodes et présentez vos réponses avec précision.'
+      : 'Durée conseillée : 1 h 30 · Sujet d’examen d’entraînement. Répondez de façon structurée et justifiez vos méthodes.', 48, 258, { width: 495, lineGap: 4 });
     const prompts = [
       `1. Présentez les notions fondamentales étudiées en ${course.name} et expliquez leur utilité.`,
       '2. Définissez précisément deux concepts clés du cours et illustrez chacun par un exemple.',
       '3. Résolvez un exercice ou un cas d’application en détaillant toutes les étapes du raisonnement.',
       '4. Comparez deux méthodes, résultats ou approches vus pendant le semestre.',
-      '5. Rédigez une synthèse courte : quelles connaissances devez-vous encore consolider avant l’examen ?',
+      '5. Rédigez une synthèse courte : quelles connaissances devez-vous encore consolider avant l’épreuve ?',
     ];
-    let y = 326;
+    let y = 339;
     doc.fillColor(ink).font('Helvetica-Bold').fontSize(13).text('Sujet', 48, y); y += 28;
     for (const prompt of prompts) {
       doc.fillColor(ink).font('Helvetica').fontSize(10).text(prompt, 48, y, { width: 495, lineGap: 3 });
@@ -648,35 +673,40 @@ async function buildRevisionSubjectPdf({ template, semester, unit, course }) {
 }
 
 const renderArchivesPage = async (req, res) => {
-  const stud = await student(req);
-  const d = await studentData(stud);
-  if (!d.template) return res.redirect(303, url('/accueil', { ...req.ctx, err: 'Aucun modèle disponible.' }));
+  const catalog = await loadArchiveCatalog();
   /* /releve reste servi comme alias de compatibilité, mais adopte l'URL active pour la navigation. */
   if (req.path === '/releve') req.ctx = { ...req.ctx, pathname: '/archives' };
 
-  const unique = new Map();
-  for (const semester of d.personal.semesters) for (const unit of semester.units) for (const course of unit.courses) {
-    if (!unique.has(String(course.id))) unique.set(String(course.id), { semester, unit, course });
-  }
-  const subjects = [...unique.values()];
   const searchQuery = String(req.query.q || '').trim();
   const normalizedQuery = normalizeArchiveSearch(searchQuery);
-  const archiveSubjectText = ({ semester, unit, course }) => [`S${semester.number}`, semester.name, unit.code, unit.name, course.code, course.name, d.template.level_name, d.template.year_label].filter(Boolean).join(' ');
-  const matchingSubjects = subjects.filter((subject) => !normalizedQuery || normalizeArchiveSearch(archiveSubjectText(subject)).includes(normalizedQuery));
-  const subjectsHtml = subjects.length ? subjects.map(({ semester, unit, course }) => {
-    const searchText = archiveSubjectText({ semester, unit, course });
-    const initiallyVisible = !normalizedQuery || normalizeArchiveSearch(searchText).includes(normalizedQuery);
-    return `<article class="archive-subject card" data-archive-search="${esc(searchText)}"${initiallyVisible ? '' : ' style="display:none"'}>
-      <div class="row spread" style="gap:8px;align-items:flex-start"><span class="chip gray">S${semester.number} · ${esc(unit.code)}</span><span class="tiny muted">PDF</span></div>
-      <h3>${esc(course.name)}</h3>
-      <p class="small muted">${esc(unit.name)}${course.code ? ` · ${esc(course.code)}` : ''}</p>
-      <div class="archive-subject-details"><span>Niveau ${esc(d.template.level_name || '—')}</span><span>Année ${esc(d.template.year_label || '—')}</span></div>
-      <a class="btn sm" style="width:100%;text-decoration:none;text-align:center" href="${url(`/archives/sujets/${encodeURIComponent(course.id)}.pdf`, req.ctx)}">Télécharger le sujet</a>
+  const selectedYear = String(req.query.year || '');
+  const selectedLevel = String(req.query.level || '');
+  const selectedProgram = String(req.query.program || '');
+  const selectedType = Object.hasOwn(ARCHIVE_KINDS, String(req.query.type || '')) ? String(req.query.type) : '';
+  const matches = (doc) => (!normalizedQuery || normalizeArchiveSearch(archiveDocumentText(doc)).includes(normalizedQuery))
+    && (!selectedYear || String(doc.template.year_label || '') === selectedYear)
+    && (!selectedLevel || String(doc.template.level_name || '') === selectedLevel)
+    && (!selectedProgram || String(doc.template.program_name || '') === selectedProgram)
+    && (!selectedType || doc.kind === selectedType);
+  const matchingDocuments = catalog.documents.filter(matches);
+  const years = [...new Set(catalog.templates.map((t) => t.year_label).filter(Boolean))].sort().reverse();
+  const levels = [...new Set(catalog.templates.map((t) => t.level_name).filter(Boolean))].sort();
+  const programs = [...new Set(catalog.templates.map((t) => t.program_name).filter(Boolean))].sort();
+  const subjectsHtml = catalog.documents.length ? catalog.documents.map((doc) => {
+    const kindMeta = ARCHIVE_KINDS[doc.kind];
+    const searchText = archiveDocumentText(doc);
+    const initiallyVisible = matches(doc);
+    return `<article class="archive-subject card" data-archive-search="${esc(searchText)}" data-archive-year="${esc(doc.template.year_label || '')}" data-archive-level="${esc(doc.template.level_name || '')}" data-archive-program="${esc(doc.template.program_name || '')}" data-archive-type="${esc(doc.kind)}"${initiallyVisible ? '' : ' style="display:none"'}>
+      <div class="row spread" style="gap:8px;align-items:flex-start"><span class="chip gray">S${doc.semester.number} · ${esc(doc.unit.code)}</span><span class="chip ${doc.kind === 'rattrapage' ? 'warn' : 'info'}">${kindMeta.label}</span></div>
+      <h3>${esc(doc.course.name)}</h3>
+      <p class="small muted">${esc(doc.unit.name)}${doc.course.code ? ` · ${esc(doc.course.code)}` : ''}</p>
+      <div class="archive-subject-details"><span>Filière ${esc(doc.template.program_name || '—')}</span><span>Niveau ${esc(doc.template.level_name || '—')}</span><span>Année ${esc(doc.template.year_label || '—')}</span></div>
+      <a class="btn sm" style="width:100%;text-decoration:none;text-align:center" href="${url(`/archives/sujets/${encodeURIComponent(doc.template.id)}/${encodeURIComponent(doc.course.id)}/${doc.kind}.pdf`, req.ctx)}">Télécharger le sujet</a>
     </article>`;
-  }).join('') : '<div class="empty">Aucun sujet de révision disponible pour votre modèle.</div>';
-  const semestersHtml = d.personal.semesters.map((s) => `<div class="archive-semester card">
-      <div class="row spread"><b>S${s.number} — ${esc(s.name)}</b><span class="chip ${s.average == null ? 'gray' : s.average >= 10 ? 'ok' : 'warn'}">${fmt(s.average)}/20</span></div>
-      <div class="small muted" style="margin-top:6px">${fmt(s.creditsEarned, 0)} / ${fmt(s.ectsExpected || 0, 0)} ECTS · ${s.units.reduce((n, u) => n + u.courses.length, 0)} matières</div>
+  }).join('') : '<div class="empty">Aucun sujet de révision disponible.</div>';
+  const semestersHtml = catalog.semesters.map(({ template, semester }) => `<div class="archive-semester card">
+      <div class="row spread"><b>S${semester.number} — ${esc(semester.name)}</b><span class="chip gray">${esc(template.level_name || '—')}</span></div>
+      <div class="small muted" style="margin-top:6px">${esc(template.program_name || '—')} · ${esc(template.year_label || '—')} · ${semester.units.reduce((n, u) => n + u.courses.length, 0)} matières</div>
     </div>`).join('');
   const body = `<div class="archive-intro">
       <h1>Archives</h1>
@@ -684,28 +714,44 @@ const renderArchivesPage = async (req, res) => {
         <label class="sr-only" for="archive-search-input">Rechercher dans les archives</label>
         <div class="archive-search-row">
           <input class="input" id="archive-search-input" name="q" value="${esc(searchQuery)}" type="search" placeholder="Rechercher une matière, une UE ou un semestre" aria-controls="archive-subjects-list"/>
-          <button class="icon-btn archive-filter-button" id="archive-search-filter" type="submit" title="Filtrer la recherche" aria-label="Filtrer la recherche"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16l-6 7v5l-4 2v-7L4 5Z"/></svg></button>
+          <button class="icon-btn archive-filter-button" id="archive-search-filter" type="button" title="Ouvrir les filtres" aria-label="Ouvrir les filtres" aria-expanded="false" aria-controls="archive-filter-menu"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16l-6 7v5l-4 2v-7L4 5Z"/></svg></button>
         </div>
-        <div class="tiny muted" id="archive-search-status" aria-live="polite">${matchingSubjects.length} résultat${matchingSubjects.length > 1 ? 's' : ''}</div>
+        <div class="archive-filter-menu" id="archive-filter-menu" hidden>
+          <div class="archive-filter-grid">
+            <label>Année<select class="input" id="archive-filter-year" name="year">${optionList(years, selectedYear)}</select></label>
+            <label>Niveau<select class="input" id="archive-filter-level" name="level">${optionList(levels, selectedLevel)}</select></label>
+            <label>Filière<select class="input" id="archive-filter-program" name="program">${optionList(programs, selectedProgram)}</select></label>
+            <label>Type de sujet<select class="input" id="archive-filter-type" name="type"><option value="">Tous</option><option value="examen"${selectedType === 'examen' ? ' selected' : ''}>Examen</option><option value="rattrapage"${selectedType === 'rattrapage' ? ' selected' : ''}>Rattrapage (ancien sujet)</option></select></label>
+          </div>
+          <div class="archive-filter-actions"><button class="btn sm" type="submit">Appliquer les filtres</button><button class="btn sm ghost" id="archive-filter-reset" type="button">Réinitialiser</button></div>
+        </div>
+        <div class="tiny muted" id="archive-search-status" aria-live="polite">${matchingDocuments.length} document${matchingDocuments.length > 1 ? 's' : ''}</div>
       </form>
     </div>
     <section class="archive-section" aria-labelledby="archive-subjects-title">
-      <div class="section-title"><h2 id="archive-subjects-title">Sujets de révision</h2><span class="tiny muted">${subjects.length} matière${subjects.length > 1 ? 's' : ''}</span></div>
+      <div class="section-title"><h2 id="archive-subjects-title">Sujets de révision</h2><span class="tiny muted">${catalog.documents.length} document${catalog.documents.length > 1 ? 's' : ''}</span></div>
       <div class="archive-subject-grid" id="archive-subjects-list">${subjectsHtml}</div>
-      <div class="empty" id="archive-search-empty"${matchingSubjects.length || !normalizedQuery ? ' hidden' : ''}>Aucun sujet ne correspond à votre recherche.</div>
+      <div class="empty" id="archive-search-empty"${matchingDocuments.length || !searchQuery && !selectedYear && !selectedLevel && !selectedProgram && !selectedType ? ' hidden' : ''}>Aucun sujet ne correspond à vos filtres.</div>
     </section>
     <section class="archive-section" aria-labelledby="archive-semesters-title">
-      <div class="section-title"><h2 id="archive-semesters-title">Semestres archivés</h2><span class="tiny muted">Synthèse</span></div>
+      <div class="section-title"><h2 id="archive-semesters-title">Semestres archivés</h2><span class="tiny muted">Tous les niveaux et filières</span></div>
       <div class="archive-semester-grid">${semestersHtml}</div>
     </section>
     <script>
       (function () {
         var form = document.getElementById('archive-search-form');
         var input = document.getElementById('archive-search-input');
+        var filterButton = document.getElementById('archive-search-filter');
+        var filterMenu = document.getElementById('archive-filter-menu');
+        var resetButton = document.getElementById('archive-filter-reset');
+        var year = document.getElementById('archive-filter-year');
+        var level = document.getElementById('archive-filter-level');
+        var program = document.getElementById('archive-filter-program');
+        var type = document.getElementById('archive-filter-type');
         var status = document.getElementById('archive-search-status');
         var empty = document.getElementById('archive-search-empty');
         var cards = Array.prototype.slice.call(document.querySelectorAll('[data-archive-search]'));
-        if (!form || !input) return;
+        if (!form || !input || !filterButton || !filterMenu) return;
         var normalize = function (value) {
           return String(value || '').toLocaleLowerCase('fr-FR').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
         };
@@ -713,7 +759,11 @@ const renderArchivesPage = async (req, res) => {
           var term = normalize(input.value.trim());
           var visible = 0;
           cards.forEach(function (card) {
-            var match = !term || normalize(card.getAttribute('data-archive-search')).indexOf(term) !== -1;
+            var match = (!term || normalize(card.getAttribute('data-archive-search')).indexOf(term) !== -1)
+              && (!year.value || card.getAttribute('data-archive-year') === year.value)
+              && (!level.value || card.getAttribute('data-archive-level') === level.value)
+              && (!program.value || card.getAttribute('data-archive-program') === program.value)
+              && (!type.value || card.getAttribute('data-archive-type') === type.value);
             card.hidden = !match;
             card.classList.toggle('is-filtered', !match);
             card.style.display = match ? '' : 'none';
@@ -721,10 +771,15 @@ const renderArchivesPage = async (req, res) => {
           });
           empty.hidden = visible !== 0 || cards.length === 0;
           empty.style.display = visible === 0 && cards.length > 0 ? '' : 'none';
-          status.textContent = term ? visible + ' résultat' + (visible > 1 ? 's' : '') : cards.length + ' matière' + (cards.length > 1 ? 's' : '');
+          status.textContent = visible + ' document' + (visible > 1 ? 's' : '');
         };
-        input.addEventListener('input', filter);
-        form.addEventListener('submit', function (event) { event.preventDefault(); filter(); input.focus(); });
+        filterButton.addEventListener('click', function () {
+          filterMenu.hidden = !filterMenu.hidden;
+          filterButton.setAttribute('aria-expanded', String(!filterMenu.hidden));
+        });
+        [input, year, level, program, type].forEach(function (field) { field.addEventListener('input', filter); field.addEventListener('change', filter); });
+        form.addEventListener('submit', function (event) { event.preventDefault(); filter(); });
+        resetButton.addEventListener('click', function () { input.value = ''; year.value = ''; level.value = ''; program.value = ''; type.value = ''; filter(); });
         filter();
       })();
     </script>`;
@@ -733,18 +788,22 @@ const renderArchivesPage = async (req, res) => {
 
 r.get(['/archives', '/releve'], need('student'), H(renderArchivesPage));
 
-r.get('/archives/sujets/:courseId.pdf', need('student'), H(async (req, res) => {
-  const stud = await student(req);
-  const d = await studentData(stud);
-  if (!d.template) throw notFound('Sujet introuvable');
-  const found = revisionCourse(d, String(req.params.courseId).replace(/\.pdf$/i, ''));
-  if (!found) throw notFound('Sujet introuvable');
-  const pdf = await buildRevisionSubjectPdf({ template: d.template, ...found });
+const sendArchiveSubject = async (req, res, { legacy = false } = {}) => {
+  const catalog = await loadArchiveCatalog();
+  const templateId = legacy ? null : String(req.params.templateId);
+  const courseId = String(req.params.courseId || req.params.legacyCourseId).replace(/\.pdf$/i, '');
+  const kind = legacy ? 'examen' : String(req.params.kind || '').replace(/\.pdf$/i, '');
+  const doc = catalog.documents.find((item) => (!templateId || String(item.template.id) === templateId) && String(item.course.id) === courseId && item.kind === kind);
+  if (!doc) throw notFound('Sujet introuvable');
+  const pdf = await buildRevisionSubjectPdf(doc);
   res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Disposition', `attachment; filename="sujet-revision-${fileSlug(found.course.name)}.pdf"`);
+  res.setHeader('Content-Disposition', `attachment; filename="sujet-${fileSlug(doc.kind)}-${fileSlug(doc.course.name)}-${fileSlug(doc.template.level_name)}.pdf"`);
   res.setHeader('Cache-Control', 'private, no-store');
   res.send(pdf);
-}));
+};
+
+r.get('/archives/sujets/:templateId/:courseId/:kind.pdf', need('student'), H((req, res) => sendArchiveSubject(req, res)));
+r.get('/archives/sujets/:legacyCourseId.pdf', need('student'), H((req, res) => sendArchiveSubject(req, res, { legacy: true })));
 
 /* ──── relevé PDF (une page A4) : mêmes données et garde-fous que le relevé fusionné ──── */
 async function sendRelevePdf(res, stud, source, { allAccess = false } = {}) {
