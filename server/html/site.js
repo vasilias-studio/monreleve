@@ -560,10 +560,10 @@ r.get('/saisie', need('student'), H(async (req, res) => {
   const topAverages = semestres34.length ? `<section class="saisie-top-averages card" aria-labelledby="saisie-top-averages-title">
       <div class="section-title" style="margin-bottom:10px"><h2 id="saisie-top-averages-title" style="font-size:16px;margin:0">Moyennes des semestres</h2><span class="tiny muted">S3 et S4</span></div>
       <div class="cards2">${semestres34.map((s) => `<div class="stat"><div class="v"><span id="topsa${s.id}">${fmt(s.average)}</span><span class="tiny muted">/20</span></div><div class="k">Moyenne S${s.number}</div></div>`).join('')}</div>
+      <div class="saisie-top-download"><a class="btn sm" style="text-decoration:none;text-align:center;width:100%" href="${url('/mon-releve.pdf', { ...req.ctx, source: 'personal' })}">Télécharger mon relevé en PDF</a></div>
     </section>` : '';
-  const body = topAverages + `<div class="section-title"><h1 style="font-size:18px;margin:0">Saisie de notes — S${cur.number} <span id="dirty" class="tiny" style="display:none;color:var(--warn)">· modifié, pensez à enregistrer</span></h1><span class="tiny muted">Calcul en direct comme dans Excel — enregistré puis revérifié par le serveur</span></div>
+  const body = topAverages + `<div class="section-title"><h1 style="font-size:18px;margin:0">Saisie de notes — S${cur.number} <span id="dirty" class="tiny" style="display:none;color:var(--warn)">· modifié, pensez à enregistrer</span></h1></div>
     <div class="cards2" style="margin-bottom:10px">
-      <div class="stat"><div class="v"><span id="sa${cur.id}">${fmt(cur.average)}</span><span class="tiny muted">/20</span></div><div class="k">Moyenne du semestre (en direct)</div></div>
       <div class="stat"><div class="v"><span id="ga">${fmt(d.personal.generalAverage)}</span><span class="tiny muted">/20</span></div><div class="k">Moyenne générale (en direct)</div></div>
     </div>
     ${tabsHtml}

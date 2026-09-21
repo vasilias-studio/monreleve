@@ -620,6 +620,7 @@ body.route-saisie main,
 body.route-archives main { max-width: 1080px; }
 
 body.route-saisie .saisie-top-averages { margin: 0 0 14px; padding: 14px; }
+body.route-saisie .saisie-top-download { margin-top: 10px; }
 
 /* Archives : cartes de ressources lisibles sur mobile comme sur bureau. */
 .archive-intro { padding: 10px 2px 18px; }
