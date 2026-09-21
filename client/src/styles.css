@@ -630,13 +630,16 @@ body.route-saisie .saisie-top-download { margin-top: 10px; }
 .archive-search { margin-top: 18px; max-width: 680px; }
 .archive-search-row { display: flex; gap: 8px; align-items: center; }
 .archive-search-row .input { flex: 1 1 auto; min-width: 0; }
+.archive-filter-button { flex: 0 0 40px; width: 40px; height: 40px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+.archive-filter-button svg { width: 18px; height: 18px; }
 .archive-search .tiny { display: block; margin-top: 7px; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .archive-subject-grid,
 .archive-semester-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
 .archive-subject { padding: 14px; display: flex; flex-direction: column; min-height: 182px; }
 .archive-subject h3 { margin: 16px 0 4px; font-size: 16px; line-height: 1.15; }
-.archive-subject p { margin: 0 0 14px; flex: 1; }
+.archive-subject p { margin: 0 0 10px; flex: 1; }
+.archive-subject-details { display: flex; flex-wrap: wrap; gap: 6px 12px; margin: 0 0 14px; color: var(--muted); font-size: 11px; letter-spacing: .02em; }
 .archive-semester { padding: 14px; }
 body.route-archives .card { border-radius: 22px; }
 [data-theme="dark"] body.route-archives .archive-subject,

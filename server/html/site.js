@@ -659,11 +659,12 @@ const renderArchivesPage = async (req, res) => {
   }
   const subjects = [...unique.values()];
   const subjectsHtml = subjects.length ? subjects.map(({ semester, unit, course }) => {
-    const searchText = [`S${semester.number}`, semester.name, unit.code, unit.name, course.code, course.name].filter(Boolean).join(' ');
+    const searchText = [`S${semester.number}`, semester.name, unit.code, unit.name, course.code, course.name, d.template.level_name, d.template.year_label].filter(Boolean).join(' ');
     return `<article class="archive-subject card" data-archive-search="${esc(searchText)}">
       <div class="row spread" style="gap:8px;align-items:flex-start"><span class="chip gray">S${semester.number} · ${esc(unit.code)}</span><span class="tiny muted">PDF</span></div>
       <h3>${esc(course.name)}</h3>
       <p class="small muted">${esc(unit.name)}${course.code ? ` · ${esc(course.code)}` : ''}</p>
+      <div class="archive-subject-details"><span>Niveau ${esc(d.template.level_name || '—')}</span><span>Année ${esc(d.template.year_label || '—')}</span></div>
       <a class="btn sm" style="width:100%;text-decoration:none;text-align:center" href="${url(`/archives/sujets/${encodeURIComponent(course.id)}.pdf`, req.ctx)}">Télécharger le sujet</a>
     </article>`;
   }).join('') : '<div class="empty">Aucun sujet de révision disponible pour votre modèle.</div>';
@@ -673,11 +674,11 @@ const renderArchivesPage = async (req, res) => {
     </div>`).join('');
   const body = `<div class="archive-intro">
       <h1>Archives</h1>
-      <form class="archive-search" role="search" onsubmit="return false" autocomplete="off">
+      <form class="archive-search" id="archive-search-form" role="search" autocomplete="off">
         <label class="sr-only" for="archive-search-input">Rechercher dans les archives</label>
         <div class="archive-search-row">
           <input class="input" id="archive-search-input" type="search" placeholder="Rechercher une matière, une UE ou un semestre" aria-controls="archive-subjects-list"/>
-          <button class="btn sm ghost" id="archive-search-clear" type="button" hidden>Effacer</button>
+          <button class="icon-btn archive-filter-button" id="archive-search-filter" type="submit" title="Filtrer la recherche" aria-label="Filtrer la recherche"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16l-6 7v5l-4 2v-7L4 5Z"/></svg></button>
         </div>
         <div class="tiny muted" id="archive-search-status" aria-live="polite">${subjects.length} matière${subjects.length > 1 ? 's' : ''}</div>
       </form>
@@ -693,12 +694,12 @@ const renderArchivesPage = async (req, res) => {
     </section>
     <script>
       (function () {
+        var form = document.getElementById('archive-search-form');
         var input = document.getElementById('archive-search-input');
-        var clear = document.getElementById('archive-search-clear');
         var status = document.getElementById('archive-search-status');
         var empty = document.getElementById('archive-search-empty');
         var cards = Array.prototype.slice.call(document.querySelectorAll('[data-archive-search]'));
-        if (!input) return;
+        if (!form || !input) return;
         var normalize = function (value) {
           return String(value || '').toLocaleLowerCase('fr-FR').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
         };
@@ -710,12 +711,11 @@ const renderArchivesPage = async (req, res) => {
             card.hidden = !match;
             if (match) visible += 1;
           });
-          clear.hidden = !input.value;
           empty.hidden = visible !== 0 || cards.length === 0;
           status.textContent = term ? visible + ' résultat' + (visible > 1 ? 's' : '') : cards.length + ' matière' + (cards.length > 1 ? 's' : '');
         };
         input.addEventListener('input', filter);
-        clear.addEventListener('click', function () { input.value = ''; filter(); input.focus(); });
+        form.addEventListener('submit', function (event) { event.preventDefault(); filter(); input.focus(); });
       })();
     </script>`;
   res.send(stuPage(req, 'Archives', body));

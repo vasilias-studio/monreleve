@@ -181,7 +181,8 @@ if (imageAnnoncePath) {
 const archivesEtudiant = await appel('/archives', { cookie: cookieEtudiant });
 verifier('archives : page accessible', archivesEtudiant.statut === 200 && /Archives/.test(archivesEtudiant.texte));
 verifier('archives : sujets et téléchargements présents', /Sujets de révision/.test(archivesEtudiant.texte) && /Télécharger le sujet/.test(archivesEtudiant.texte));
-verifier('archives : recherche et filtrage présents', /id="archive-search-input"/.test(archivesEtudiant.texte) && /data-archive-search=/.test(archivesEtudiant.texte) && /archive-search-clear/.test(archivesEtudiant.texte));
+verifier('archives : recherche et filtrage présents', /id="archive-search-input"/.test(archivesEtudiant.texte) && /data-archive-search=/.test(archivesEtudiant.texte) && /archive-filter-button/.test(archivesEtudiant.texte) && /Filtrer la recherche/.test(archivesEtudiant.texte));
+verifier('archives : niveau et année des sujets', /Niveau\s+L\d/.test(archivesEtudiant.texte) && /Année/.test(archivesEtudiant.texte));
 verifier('archives : contenus retirés', !/Ressources étudiantes|Retrouvez vos résultats exportables|Mes documents|Chaque sujet est généré/.test(archivesEtudiant.texte));
 verifier('archives : navigation remplace Relevé', /href="\/archives"/.test(archivesEtudiant.texte) && /Archives/.test(archivesEtudiant.texte) && !/href="\/releve"[^>]*>Relevé/.test(archivesEtudiant.texte));
 propre('/archives', archivesEtudiant);
