@@ -141,7 +141,7 @@ export function page(ctx, { title = 'MonRelevé', body = '', tabs = null, adminT
   </script>` : '';
 
   const adminNav = !minimal && adminTab ? `<nav class="admin-nav" aria-label="Navigation administration">
-      ${[['/accueil', 'Annonces'], ['/admin', 'Tableau de bord'], ['/admin/etudiants', 'Étudiants'], ['/admin/modeles', 'Modèles'], ['/admin/import', 'Import Excel'], ['/admin/referentiels', 'Référentiels'], ['/admin/emploi', 'Calendrier'], ['/admin/messages', 'Messages']]
+      ${[['/accueil', 'Annonces'], ['/admin', 'Tableau de bord'], ['/admin/etudiants', 'Étudiants'], ['/admin/modeles', 'Modèles'], ['/admin/import', 'Import Excel'], ['/admin/referentiels', 'Référentiels'], ['/admin/archives', 'Archives'], ['/admin/emploi', 'Calendrier'], ['/admin/messages', 'Messages']]
         .map(([p, l]) => `<a href="${url(p, { t: ctx.t, th })}" class="chip ${p === adminTab ? 'violet' : 'gray'}">${l}</a>`).join('')}
     </nav>` : '';
 

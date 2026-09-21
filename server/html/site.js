@@ -64,6 +64,15 @@ const profileUpload = multer({
     cb(ok ? null : new ApiError(400, 'Photo attendue : .jpg, .png ou .webp'), ok);
   },
 });
+const ARCHIVE_FILE_MAX = 3 * 1024 * 1024;
+const archiveUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: ARCHIVE_FILE_MAX },
+  fileFilter: (_q, f, cb) => {
+    const ok = /\.(pdf|jpe?g|png)$/i.test(f.originalname) && /^(application\/pdf|image\/(jpeg|png))$/i.test(f.mimetype || '');
+    cb(ok ? null : new ApiError(400, 'Format attendu : .pdf, .jpg ou .png'), ok);
+  },
+});
 
 /* ------------------------------------------------------------------ */
 /* Utilitaires                                                          */
@@ -599,7 +608,7 @@ const fileSlug = (value) => String(value || 'sujet').normalize('NFD').replace(/[
 const normalizeArchiveSearch = (value) => String(value || '').toLocaleLowerCase('fr-FR').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 const ARCHIVE_KINDS = {
   examen: { label: 'Examen', pdfLabel: 'SUJET D’EXAMEN' },
-  rattrapage: { label: 'Ancien rattrapage', pdfLabel: 'ANCIEN SUJET DE RATTRAPAGE' },
+  rattrapage: { label: 'Rattrapage', pdfLabel: 'SUJET DE RATTRAPAGE' },
 };
 
 /** Catalogue commun : un étudiant peut consulter les sujets de tous les modèles. */
@@ -615,15 +624,26 @@ async function loadArchiveCatalog() {
     for (const semester of tree) {
       semesters.push({ template, semester });
       for (const unit of semester.units || []) for (const course of unit.courses || []) {
-        for (const kind of Object.keys(ARCHIVE_KINDS)) documents.push({ template, semester, unit, course, kind });
+        for (const kind of Object.keys(ARCHIVE_KINDS)) documents.push({ source: 'generated', template, semester, unit, course, kind });
       }
     }
   }
+  const imported = await db.prepare(`SELECT ad.id, ad.subject, ad.kind, ad.file_name, ad.mime, ad.content, ad.size,
+      y.label AS year_label, l.name AS level_name
+    FROM archive_documents ad
+    LEFT JOIN academic_years y ON y.id=ad.academic_year_id
+    JOIN levels l ON l.id=ad.level_id
+    ORDER BY ad.created_at DESC, ad.id DESC`).all();
+  for (const row of imported) documents.push({
+    source: 'uploaded', id: row.id, kind: row.kind, file_name: row.file_name, mime: row.mime, content: row.content, size: row.size,
+    template: { id: null, name: 'Document importé', program_name: 'Toutes les filières', level_name: row.level_name, year_label: row.year_label },
+    semester: { number: null, name: 'Archive' }, unit: { code: 'ARCHIVE', name: 'Sujet importé' }, course: { id: row.id, name: row.subject, code: null },
+  });
   return { templates, documents, semesters };
 }
 
 const archiveDocumentText = (doc) => [
-  `S${doc.semester.number}`, doc.semester.name, doc.unit.code, doc.unit.name, doc.course.code, doc.course.name,
+  doc.semester.number ? `S${doc.semester.number}` : 'Archive', doc.semester.name, doc.unit.code, doc.unit.name, doc.course.code, doc.course.name,
   doc.template.program_name, doc.template.level_name, doc.template.year_label, ARCHIVE_KINDS[doc.kind]?.label,
 ].filter(Boolean).join(' ');
 const optionList = (values, selected) => `<option value="">Tous</option>${values.map((value) => `<option value="${esc(value)}"${String(value) === String(selected) ? ' selected' : ''}>${esc(value)}</option>`).join('')}`;
@@ -650,7 +670,7 @@ async function buildRevisionSubjectPdf({ template, semester, unit, course, kind 
     doc.moveTo(48, 211).lineTo(547, 211).lineWidth(1).strokeColor(copper).stroke();
     doc.fillColor(ink).font('Helvetica-Bold').fontSize(13).text('Consignes', 48, 233);
     doc.fillColor(ink).font('Helvetica').fontSize(10).text(kind === 'rattrapage'
-      ? 'Durée conseillée : 1 h 30 · Ancien sujet de rattrapage à utiliser comme entraînement. Justifiez vos méthodes et présentez vos réponses avec précision.'
+      ? 'Durée conseillée : 1 h 30 · Sujet de rattrapage à utiliser comme entraînement. Justifiez vos méthodes et présentez vos réponses avec précision.'
       : 'Durée conseillée : 1 h 30 · Sujet d’examen d’entraînement. Répondez de façon structurée et justifiez vos méthodes.', 48, 258, { width: 495, lineGap: 4 });
     const prompts = [
       `1. Présentez les notions fondamentales étudiées en ${course.name} et expliquez leur utilité.`,
@@ -686,22 +706,26 @@ const renderArchivesPage = async (req, res) => {
   const matches = (doc) => (!normalizedQuery || normalizeArchiveSearch(archiveDocumentText(doc)).includes(normalizedQuery))
     && (!selectedYear || String(doc.template.year_label || '') === selectedYear)
     && (!selectedLevel || String(doc.template.level_name || '') === selectedLevel)
-    && (!selectedProgram || String(doc.template.program_name || '') === selectedProgram)
+    && (!selectedProgram || doc.template.program_name === 'Toutes les filières' || String(doc.template.program_name || '') === selectedProgram)
     && (!selectedType || doc.kind === selectedType);
   const matchingDocuments = catalog.documents.filter(matches);
-  const years = [...new Set(catalog.templates.map((t) => t.year_label).filter(Boolean))].sort().reverse();
-  const levels = [...new Set(catalog.templates.map((t) => t.level_name).filter(Boolean))].sort();
+  const years = [...new Set(catalog.documents.map((d) => d.template.year_label).filter(Boolean))].sort().reverse();
+  const levels = [...new Set(catalog.documents.map((d) => d.template.level_name).filter(Boolean))].sort();
   const programs = [...new Set(catalog.templates.map((t) => t.program_name).filter(Boolean))].sort();
   const subjectsHtml = catalog.documents.length ? catalog.documents.map((doc) => {
     const kindMeta = ARCHIVE_KINDS[doc.kind];
     const searchText = archiveDocumentText(doc);
     const initiallyVisible = matches(doc);
-    return `<article class="archive-subject card" data-archive-search="${esc(searchText)}" data-archive-year="${esc(doc.template.year_label || '')}" data-archive-level="${esc(doc.template.level_name || '')}" data-archive-program="${esc(doc.template.program_name || '')}" data-archive-type="${esc(doc.kind)}"${initiallyVisible ? '' : ' style="display:none"'}>
-      <div class="row spread" style="gap:8px;align-items:flex-start"><span class="chip gray">S${doc.semester.number} · ${esc(doc.unit.code)}</span><span class="chip ${doc.kind === 'rattrapage' ? 'warn' : 'info'}">${kindMeta.label}</span></div>
+    const semesterLabel = doc.semester.number ? `S${doc.semester.number} · ${esc(doc.unit.code)}` : 'Document importé';
+    const downloadPath = doc.source === 'uploaded'
+      ? `/archives/fichiers/${encodeURIComponent(doc.id)}`
+      : `/archives/sujets/${encodeURIComponent(doc.template.id)}/${encodeURIComponent(doc.course.id)}/${doc.kind}.pdf`;
+    return `<article class="archive-subject card" data-archive-search="${esc(searchText)}" data-archive-year="${esc(doc.template.year_label || '')}" data-archive-level="${esc(doc.template.level_name || '')}" data-archive-program="${esc(doc.template.program_name === 'Toutes les filières' ? '' : doc.template.program_name || '')}" data-archive-type="${esc(doc.kind)}"${initiallyVisible ? '' : ' style="display:none"'}>
+      <div class="row spread" style="gap:8px;align-items:flex-start"><span class="chip gray">${semesterLabel}</span><span class="chip ${doc.kind === 'rattrapage' ? 'warn' : 'info'}">${kindMeta.label}</span></div>
       <h3>${esc(doc.course.name)}</h3>
       <p class="small muted">${esc(doc.unit.name)}${doc.course.code ? ` · ${esc(doc.course.code)}` : ''}</p>
       <div class="archive-subject-details"><span>Filière ${esc(doc.template.program_name || '—')}</span><span>Niveau ${esc(doc.template.level_name || '—')}</span><span>Année ${esc(doc.template.year_label || '—')}</span></div>
-      <a class="btn sm" style="width:100%;text-decoration:none;text-align:center" href="${url(`/archives/sujets/${encodeURIComponent(doc.template.id)}/${encodeURIComponent(doc.course.id)}/${doc.kind}.pdf`, req.ctx)}">Télécharger le sujet</a>
+      <a class="btn sm" style="width:100%;text-decoration:none;text-align:center" href="${url(downloadPath, req.ctx)}">Télécharger le sujet</a>
     </article>`;
   }).join('') : '<div class="empty">Aucun sujet de révision disponible.</div>';
   const semestersHtml = catalog.semesters.map(({ template, semester }) => `<div class="archive-semester card">
@@ -721,7 +745,7 @@ const renderArchivesPage = async (req, res) => {
             <label>Année<select class="input" id="archive-filter-year" name="year">${optionList(years, selectedYear)}</select></label>
             <label>Niveau<select class="input" id="archive-filter-level" name="level">${optionList(levels, selectedLevel)}</select></label>
             <label>Filière<select class="input" id="archive-filter-program" name="program">${optionList(programs, selectedProgram)}</select></label>
-            <label>Type de sujet<select class="input" id="archive-filter-type" name="type"><option value="">Tous</option><option value="examen"${selectedType === 'examen' ? ' selected' : ''}>Examen</option><option value="rattrapage"${selectedType === 'rattrapage' ? ' selected' : ''}>Rattrapage (ancien sujet)</option></select></label>
+            <label>Type de sujet<select class="input" id="archive-filter-type" name="type"><option value="">Tous</option><option value="examen"${selectedType === 'examen' ? ' selected' : ''}>Examen</option><option value="rattrapage"${selectedType === 'rattrapage' ? ' selected' : ''}>Rattrapage</option></select></label>
           </div>
           <div class="archive-filter-actions"><button class="btn sm" type="submit">Appliquer les filtres</button><button class="btn sm ghost" id="archive-filter-reset" type="button">Réinitialiser</button></div>
         </div>
@@ -762,7 +786,7 @@ const renderArchivesPage = async (req, res) => {
             var match = (!term || normalize(card.getAttribute('data-archive-search')).indexOf(term) !== -1)
               && (!year.value || card.getAttribute('data-archive-year') === year.value)
               && (!level.value || card.getAttribute('data-archive-level') === level.value)
-              && (!program.value || card.getAttribute('data-archive-program') === program.value)
+              && (!program.value || !card.getAttribute('data-archive-program') || card.getAttribute('data-archive-program') === program.value)
               && (!type.value || card.getAttribute('data-archive-type') === type.value);
             card.hidden = !match;
             card.classList.toggle('is-filtered', !match);
@@ -804,6 +828,14 @@ const sendArchiveSubject = async (req, res, { legacy = false } = {}) => {
 
 r.get('/archives/sujets/:templateId/:courseId/:kind.pdf', need('student'), H((req, res) => sendArchiveSubject(req, res)));
 r.get('/archives/sujets/:legacyCourseId.pdf', need('student'), H((req, res) => sendArchiveSubject(req, res, { legacy: true })));
+r.get('/archives/fichiers/:id', need('student'), H(async (req, res) => {
+  const row = await db.prepare('SELECT file_name, mime, content FROM archive_documents WHERE id=?').get(Number(req.params.id));
+  if (!row) throw notFound('Sujet introuvable');
+  res.setHeader('Content-Type', row.mime || 'application/octet-stream');
+  res.setHeader('Content-Disposition', `attachment; filename="${archiveDownloadName(row.file_name)}"`);
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.send(Buffer.isBuffer(row.content) ? row.content : Buffer.from(row.content));
+}));
 
 /* ──── relevé PDF (une page A4) : mêmes données et garde-fous que le relevé fusionné ──── */
 async function sendRelevePdf(res, stud, source, { allAccess = false } = {}) {
@@ -1207,7 +1239,7 @@ r.post('/profil/password', need(), H(async (req, res) => {
 /* ------------------------------------------------------------------ */
 /* Espace administrateur                                                */
 /* ------------------------------------------------------------------ */
-const adminPage = (req, title, body, options = {}) => page(req.ctx, { title, body, adminTab: (req.ctx.pathname.match(/^\/admin\/(etudiants|modeles|import|referentiels|emploi|messages)/)?.[0] || '/admin').replace('/etudiants/', '/etudiants').replace('/modeles/', '/modeles'), ...options });
+const adminPage = (req, title, body, options = {}) => page(req.ctx, { title, body, adminTab: (req.ctx.pathname.match(/^\/admin\/(etudiants|modeles|import|referentiels|emploi|messages|archives)/)?.[0] || '/admin').replace('/etudiants/', '/etudiants').replace('/modeles/', '/modeles'), ...options });
 
 r.get('/admin', need('admin'), H(async (req, res) => {
   const st = {
@@ -1795,6 +1827,78 @@ r.post('/admin/ref/:key/:id/delete', need('admin'), H(async (req, res) => {
   const conf = REF_TABLES[req.params.key]; if (!conf) throw notFound();
   try { await db.prepare(`DELETE FROM ${conf.table} WHERE id=?`).run(Number(req.params.id)); } catch { return res.redirect(303, url('/admin/referentiels', { ...req.ctx, err: 'Suppression impossible : cette ligne est référencée ailleurs.' })); }
   res.redirect(303, url('/admin/referentiels', { ...req.ctx, ok: 'Ligne supprimée.' }));
+}));
+
+/* ------------------------------------------------------------------ */
+/* Archives administrables : dépôt de sujets (3 Mo maximum)            */
+/* ------------------------------------------------------------------ */
+const archiveDownloadName = (value) => String(value || 'archive-document').replace(/[\"\r\n]/g, '_').slice(0, 180);
+const archiveUploadOne = (req, res, next) => archiveUpload.single('file')(req, res, (err) => {
+  if (!err) return next();
+  if (err.code === 'LIMIT_FILE_SIZE') return next(badRequest('Fichier trop volumineux : 3 Mo maximum.'));
+  next(err);
+});
+
+r.get('/admin/archives', need('admin'), H(async (req, res) => {
+  const years = await db.prepare('SELECT id, label FROM academic_years ORDER BY start_year DESC, label DESC').all();
+  const levels = await db.prepare('SELECT id, name FROM levels ORDER BY ord, name').all();
+  const rows = await db.prepare(`SELECT ad.id, ad.subject, ad.kind, ad.file_name, ad.mime, ad.size, ad.created_at,
+      y.label AS year_label, l.name AS level_name
+    FROM archive_documents ad
+    LEFT JOIN academic_years y ON y.id=ad.academic_year_id
+    JOIN levels l ON l.id=ad.level_id
+    ORDER BY ad.created_at DESC, ad.id DESC`).all();
+  const sizeMo = (value) => `${(Number(value || 0) / (1024 * 1024)).toFixed(2)} Mo`;
+  const list = rows.length ? `<div class="stack">${rows.map((row) => `<div class="card archive-admin-item">
+      <div class="row spread" style="gap:10px;align-items:flex-start"><div><b>${esc(row.subject)}</b><div class="tiny muted">${esc(row.file_name)} · ${esc(row.mime)} · ${sizeMo(row.size)}</div></div><span class="chip ${row.kind === 'rattrapage' ? 'warn' : 'info'}">${row.kind === 'rattrapage' ? 'Rattrapage' : 'Examen'}</span></div>
+      <div class="small muted" style="margin-top:8px">${esc(row.year_label || 'Année non renseignée')} · ${esc(row.level_name)} · <a href="${url('/admin/archives/fichiers/' + row.id, req.ctx)}">Ouvrir</a></div>
+      <form method="post" action="${url('/admin/archives/' + row.id + '/delete', req.ctx)}" style="margin-top:8px"><button class="btn sm danger" type="submit">Supprimer</button></form>
+    </div>`).join('')}</div>` : '<div class="empty">Aucun sujet importé pour le moment.</div>';
+  const body = `<div class="row spread" style="margin:4px 2px 12px"><div><h1 style="font-size:18px;margin:0">Archives</h1><p class="small muted" style="margin:6px 0 0">Importez un sujet PDF, PNG ou JPG de 3 Mo maximum.</p></div></div>
+    <form class="card archive-admin-form" method="post" action="${url('/admin/archives/import', req.ctx)}" enctype="multipart/form-data">
+      ${hiddenT(req.ctx.t, { th: req.ctx.th })}
+      <div class="field"><label for="archive-file">Fichier du sujet</label><input class="input" id="archive-file" type="file" name="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" required/><div class="tiny muted" style="margin-top:5px">Formats acceptés : PDF, PNG, JPG · 3 Mo maximum</div></div>
+      <div class="archive-admin-fields">
+        <div class="field"><label for="archive-year">Année</label><select class="input" id="archive-year" name="academic_year_id" required><option value="">Choisir une année</option>${years.map((y) => `<option value="${y.id}">${esc(y.label)}</option>`).join('')}</select></div>
+        <div class="field"><label for="archive-level">Niveau</label><select class="input" id="archive-level" name="level_id" required><option value="">Choisir un niveau</option>${levels.map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join('')}</select></div>
+        <div class="field"><label for="archive-kind">Type de sujet</label><select class="input" id="archive-kind" name="kind" required><option value="">Choisir un type</option><option value="examen">Examen</option><option value="rattrapage">Rattrapage</option></select></div>
+        <div class="field"><label for="archive-subject">Matière</label><input class="input" id="archive-subject" name="subject" maxlength="200" placeholder="Nom de la matière" required/></div>
+      </div>
+      <button class="btn" type="submit">Importer dans les archives</button>
+    </form>
+    <section class="archive-admin-list" aria-labelledby="archive-admin-list-title"><div class="section-title"><h2 id="archive-admin-list-title" style="font-size:16px">Sujets importés</h2><span class="tiny muted">${rows.length} document${rows.length > 1 ? 's' : ''}</span></div>${list}</section>`;
+  res.send(adminPage(req, 'Archives', body));
+}));
+
+r.post('/admin/archives/import', need('admin'), archiveUploadOne, H(async (req, res) => {
+  const subject = String(req.body.subject || '').trim().slice(0, 200);
+  const yearId = Number(req.body.academic_year_id);
+  const levelId = Number(req.body.level_id);
+  const kind = String(req.body.kind || '');
+  if (!req.file) throw badRequest('Sélectionnez un fichier à importer.');
+  if (!subject) throw badRequest('La matière est obligatoire.');
+  if (!['examen', 'rattrapage'].includes(kind)) throw badRequest('Choisissez Examen ou Rattrapage.');
+  if (!Number.isInteger(yearId) || !await db.prepare('SELECT id FROM academic_years WHERE id=?').get(yearId)) throw badRequest('Année universitaire invalide.');
+  if (!Number.isInteger(levelId) || !await db.prepare('SELECT id FROM levels WHERE id=?').get(levelId)) throw badRequest('Niveau invalide.');
+  if (req.file.size > ARCHIVE_FILE_MAX) throw badRequest('Fichier trop volumineux : 3 Mo maximum.');
+  await db.prepare(`INSERT INTO archive_documents
+    (uploaded_by, academic_year_id, level_id, subject, kind, file_name, mime, content, size)
+    VALUES (?,?,?,?,?,?,?,?,?)`).run(req.user.id, yearId, levelId, subject, kind, String(req.file.originalname || 'sujet').slice(0, 200), req.file.mimetype, req.file.buffer, req.file.size);
+  res.redirect(303, url('/admin/archives', { ...req.ctx, ok: 'Sujet importé dans les archives.' }));
+}));
+
+r.get('/admin/archives/fichiers/:id', need('admin'), H(async (req, res) => {
+  const row = await db.prepare('SELECT file_name, mime, content FROM archive_documents WHERE id=?').get(Number(req.params.id));
+  if (!row) throw notFound('Sujet introuvable');
+  res.setHeader('Content-Type', row.mime || 'application/octet-stream');
+  res.setHeader('Content-Disposition', `inline; filename="${archiveDownloadName(row.file_name)}"`);
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.send(Buffer.isBuffer(row.content) ? row.content : Buffer.from(row.content));
+}));
+
+r.post('/admin/archives/:id/delete', need('admin'), H(async (req, res) => {
+  await db.prepare('DELETE FROM archive_documents WHERE id=?').run(Number(req.params.id));
+  res.redirect(303, url('/admin/archives', { ...req.ctx, ok: 'Sujet supprimé des archives.' }));
 }));
 
 /* ------------------------------------------------------------------ */

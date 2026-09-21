@@ -648,6 +648,11 @@ body.route-saisie .saisie-top-download { margin-top: 10px; }
 .archive-subject p { margin: 0 0 10px; flex: 1; }
 .archive-subject-details { display: flex; flex-wrap: wrap; gap: 6px 12px; margin: 0 0 14px; color: var(--muted); font-size: 11px; letter-spacing: .02em; }
 .archive-semester { padding: 14px; }
+.archive-admin-form { padding: 16px; }
+.archive-admin-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.archive-admin-item { padding: 14px; }
+.archive-admin-item .danger { background: var(--bad); color: #fff; }
+.archive-admin-list { margin-top: 24px; }
 body.route-archives .card { border-radius: 22px; }
 [data-theme="dark"] body.route-archives .archive-subject,
 [data-theme="dark"] body.route-archives .archive-semester,
@@ -660,6 +665,7 @@ body.route-admin-etudiants main.wide,
 body.route-admin-modeles main.wide,
 body.route-admin-referentiels main.wide,
 body.route-admin-import main.wide,
+body.route-admin-archives main.wide,
 body.route-admin-emploi main.wide,
 body.route-admin-messages main.wide { max-width: 1280px; }
 

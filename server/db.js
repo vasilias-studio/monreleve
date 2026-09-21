@@ -262,6 +262,21 @@ CREATE TABLE IF NOT EXISTS imports (             -- journal des imports Excel
   rows_affected INTEGER DEFAULT 0,
   created_at TEXT DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS archive_documents (    -- sujets d'examen/rattrapage importés par l'administration
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  academic_year_id INTEGER REFERENCES academic_years(id) ON DELETE SET NULL,
+  level_id INTEGER NOT NULL REFERENCES levels(id) ON DELETE CASCADE,
+  subject TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('examen','rattrapage')),
+  file_name TEXT NOT NULL,
+  mime TEXT NOT NULL,
+  content BLOB NOT NULL,
+  size INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_archive_documents_filters ON archive_documents(academic_year_id, level_id, kind);
 `;
 
 export const PG_SCHEMA = postgresSchema(SQLITE_DDL);

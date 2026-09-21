@@ -77,6 +77,7 @@ for (const [chemin, attendu] of [
   ['/admin/modeles', /modèle|modele/i],
   ['/admin/referentiels', /référentiel|referentiel|filière|filiere/i],
   ['/admin/import', /import/i],
+  ['/admin/archives', /archive|sujet/i],
   ['/admin/emploi', /emploi|créneau|creneau/i],
   ['/admin/messages', /message/i],
 ]) {
@@ -87,6 +88,9 @@ for (const [chemin, attendu] of [
   if (chemin === '/accueil') {
     verifier('HTML étudiant/admin sans jeton de session', !/[?&]t=/.test(r.texte) && !/name="t"/.test(r.texte));
     verifier('composeur admin : image jointe et multipart', /enctype="multipart\/form-data"/.test(r.texte) && /name="image"/.test(r.texte));
+  }
+  if (chemin === '/admin/archives') {
+    verifier('archives admin : formulaire multipart et métadonnées', /enctype="multipart\/form-data"/.test(r.texte) && /name="file"/.test(r.texte) && /name="academic_year_id"/.test(r.texte) && /name="level_id"/.test(r.texte) && /name="kind"/.test(r.texte) && /name="subject"/.test(r.texte) && /3 Mo maximum/.test(r.texte));
   }
   if (chemin === '/admin/messages') {
     verifier('messagerie admin : liste des étudiants', /messenger-contact/.test(r.texte) && /messenger-inbox-page/.test(r.texte));
