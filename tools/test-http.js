@@ -91,6 +91,8 @@ for (const [chemin, attendu] of [
   }
   if (chemin === '/admin/archives') {
     verifier('archives admin : formulaire multipart et métadonnées', /enctype="multipart\/form-data"/.test(r.texte) && /name="file"/.test(r.texte) && /name="academic_year_id"/.test(r.texte) && /name="level_id"/.test(r.texte) && /name="kind"/.test(r.texte) && /name="subject"/.test(r.texte) && /3 Mo maximum/.test(r.texte));
+    verifier('archives admin : suggestions complètes pour la matière', /list="archive-subject-suggestions"/.test(r.texte) && /<datalist id="archive-subject-suggestions">[\s\S]*<option value="[^"].*<\/datalist>/.test(r.texte));
+    verifier('archives admin : années 2022-2027 disponibles', ['2022-2023', '2023-2024', '2024-2025', '2025-2026', '2026-2027', '2027-2028'].every((year) => r.texte.includes(`>${year}</option>`)));
   }
   if (chemin === '/admin/messages') {
     verifier('messagerie admin : liste des étudiants', /messenger-contact/.test(r.texte) && /messenger-inbox-page/.test(r.texte));

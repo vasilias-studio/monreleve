@@ -1832,6 +1832,43 @@ r.post('/admin/ref/:key/:id/delete', need('admin'), H(async (req, res) => {
 /* ------------------------------------------------------------------ */
 /* Archives administrables : dépôt de sujets (3 Mo maximum)            */
 /* ------------------------------------------------------------------ */
+const ARCHIVE_YEAR_MIN = 2022;
+const ARCHIVE_YEAR_MAX = 2027;
+const archiveYearLabel = (startYear) => `${startYear}-${startYear + 1}`;
+
+/** Les imports Archives proposent toujours les années universitaires 2022-2023 à 2027-2028. */
+async function ensureArchiveYears() {
+  const labels = Array.from({ length: ARCHIVE_YEAR_MAX - ARCHIVE_YEAR_MIN + 1 }, (_, index) => archiveYearLabel(ARCHIVE_YEAR_MIN + index));
+  const placeholders = labels.map(() => '?').join(',');
+  const existing = await db.prepare(`SELECT id, label, start_year FROM academic_years
+    WHERE start_year BETWEEN ? AND ? OR label IN (${placeholders})`)
+    .all(ARCHIVE_YEAR_MIN, ARCHIVE_YEAR_MAX, ...labels);
+  const byStart = new Map(existing.filter((row) => row.start_year !== null && row.start_year !== undefined && Number.isInteger(Number(row.start_year))).map((row) => [Number(row.start_year), row]));
+  const byLabel = new Map(existing.map((row) => [String(row.label), row]));
+  for (let year = ARCHIVE_YEAR_MIN; year <= ARCHIVE_YEAR_MAX; year += 1) {
+    const label = archiveYearLabel(year);
+    if (byStart.has(year) || byLabel.has(label)) continue;
+    try {
+      await db.prepare('INSERT INTO academic_years (label, start_year, is_current) VALUES (?,?,0)').run(label, year);
+    } catch (error) {
+      /* Une autre instance peut avoir créé la même année simultanément. */
+      if (!/unique|duplicate/i.test(String(error?.message || error))) throw error;
+    }
+  }
+  return db.prepare(`SELECT id, label, start_year FROM academic_years
+    WHERE start_year BETWEEN ? AND ? OR label IN (${placeholders})
+    ORDER BY start_year DESC, label DESC`).all(ARCHIVE_YEAR_MIN, ARCHIVE_YEAR_MAX, ...labels);
+}
+
+async function loadArchiveSubjectSuggestions() {
+  return db.prepare(`SELECT name AS subject FROM courses
+      WHERE name IS NOT NULL AND TRIM(name) <> ''
+    UNION
+    SELECT subject FROM archive_documents
+      WHERE subject IS NOT NULL AND TRIM(subject) <> ''
+    ORDER BY subject`).all();
+}
+
 const archiveDownloadName = (value) => String(value || 'archive-document').replace(/[\"\r\n]/g, '_').slice(0, 180);
 const archiveUploadOne = (req, res, next) => archiveUpload.single('file')(req, res, (err) => {
   if (!err) return next();
@@ -1840,8 +1877,11 @@ const archiveUploadOne = (req, res, next) => archiveUpload.single('file')(req, r
 });
 
 r.get('/admin/archives', need('admin'), H(async (req, res) => {
-  const years = await db.prepare('SELECT id, label FROM academic_years ORDER BY start_year DESC, label DESC').all();
-  const levels = await db.prepare('SELECT id, name FROM levels ORDER BY ord, name').all();
+  const [years, levels, subjectSuggestions] = await Promise.all([
+    ensureArchiveYears(),
+    db.prepare('SELECT id, name FROM levels ORDER BY ord, name').all(),
+    loadArchiveSubjectSuggestions(),
+  ]);
   const rows = await db.prepare(`SELECT ad.id, ad.subject, ad.kind, ad.file_name, ad.mime, ad.size, ad.created_at,
       y.label AS year_label, l.name AS level_name
     FROM archive_documents ad
@@ -1862,7 +1902,7 @@ r.get('/admin/archives', need('admin'), H(async (req, res) => {
         <div class="field"><label for="archive-year">Année</label><select class="input" id="archive-year" name="academic_year_id" required><option value="">Choisir une année</option>${years.map((y) => `<option value="${y.id}">${esc(y.label)}</option>`).join('')}</select></div>
         <div class="field"><label for="archive-level">Niveau</label><select class="input" id="archive-level" name="level_id" required><option value="">Choisir un niveau</option>${levels.map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join('')}</select></div>
         <div class="field"><label for="archive-kind">Type de sujet</label><select class="input" id="archive-kind" name="kind" required><option value="">Choisir un type</option><option value="examen">Examen</option><option value="rattrapage">Rattrapage</option></select></div>
-        <div class="field"><label for="archive-subject">Matière</label><input class="input" id="archive-subject" name="subject" maxlength="200" placeholder="Nom de la matière" required/></div>
+        <div class="field"><label for="archive-subject">Matière</label><input class="input" id="archive-subject" name="subject" list="archive-subject-suggestions" maxlength="200" placeholder="Commencez à saisir le nom de la matière" required/><datalist id="archive-subject-suggestions">${subjectSuggestions.map((row) => `<option value="${esc(row.subject)}"></option>`).join('')}</datalist><div class="tiny muted" style="margin-top:5px">Les noms des matières existantes sont proposés automatiquement.</div></div>
       </div>
       <button class="btn" type="submit">Importer dans les archives</button>
     </form>
@@ -1871,6 +1911,7 @@ r.get('/admin/archives', need('admin'), H(async (req, res) => {
 }));
 
 r.post('/admin/archives/import', need('admin'), archiveUploadOne, H(async (req, res) => {
+  await ensureArchiveYears();
   const subject = String(req.body.subject || '').trim().slice(0, 200);
   const yearId = Number(req.body.academic_year_id);
   const levelId = Number(req.body.level_id);
