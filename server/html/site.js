@@ -601,8 +601,8 @@ r.post('/saisie/:semId', need('student'), H(async (req, res) => {
 }));
 
 /* ------------------------------------------------------------------ */
-/* Archives : sujets de révision protégés par la session étudiante       */
-/* Tous les modèles, niveaux et filières alimentent le même catalogue.  */
+/* Archives : fichiers importés protégés par la session étudiante       */
+/* Les modèles ne produisent plus automatiquement de sujets ici.        */
 /* ------------------------------------------------------------------ */
 const fileSlug = (value) => String(value || 'sujet').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase().slice(0, 70) || 'sujet';
 const normalizeArchiveSearch = (value) => String(value || '').toLocaleLowerCase('fr-FR').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -611,23 +611,15 @@ const ARCHIVE_KINDS = {
   rattrapage: { label: 'Rattrapage', pdfLabel: 'SUJET DE RATTRAPAGE' },
 };
 
-/** Catalogue commun : un étudiant peut consulter les sujets de tous les modèles. */
+/** Catalogue des fichiers réellement importés : les modèles ne génèrent plus de sujets automatiquement. */
 async function loadArchiveCatalog() {
+  /* Les modèles restent chargés uniquement pour conserver le filtre Filière ;
+     leurs matières ne sont volontairement pas ajoutées au catalogue Archives. */
   const templates = await db.prepare(`SELECT t.*, p.name AS program_name, l.name AS level_name, y.label AS year_label
     FROM templates t JOIN programs p ON p.id=t.program_id JOIN levels l ON l.id=t.level_id
     LEFT JOIN academic_years y ON y.id=t.academic_year_id
     ORDER BY y.start_year DESC, l.ord, p.name, t.name`).all();
   const documents = [];
-  const semesters = [];
-  for (const template of templates) {
-    const tree = await loadTemplateTree(template.id);
-    for (const semester of tree) {
-      semesters.push({ template, semester });
-      for (const unit of semester.units || []) for (const course of unit.courses || []) {
-        for (const kind of Object.keys(ARCHIVE_KINDS)) documents.push({ source: 'generated', template, semester, unit, course, kind });
-      }
-    }
-  }
   const imported = await db.prepare(`SELECT ad.id, ad.subject, ad.kind, ad.file_name, ad.mime, ad.size,
       y.label AS year_label, l.name AS level_name
     FROM archive_documents ad
@@ -639,7 +631,7 @@ async function loadArchiveCatalog() {
     template: { id: null, name: 'Document importé', program_name: 'Toutes les filières', level_name: row.level_name, year_label: row.year_label },
     semester: { number: null, name: 'Archive' }, unit: { code: 'ARCHIVE', name: 'Sujet importé' }, course: { id: row.id, name: row.subject, code: null },
   });
-  return { templates, documents, semesters };
+  return { templates, documents, semesters: [] };
 }
 
 const archiveDocumentText = (doc) => [
@@ -727,11 +719,7 @@ const renderArchivesPage = async (req, res) => {
       <div class="archive-subject-details"><span>Filière ${esc(doc.template.program_name || '—')}</span><span>Niveau ${esc(doc.template.level_name || '—')}</span><span>Année ${esc(doc.template.year_label || '—')}</span></div>
       <a class="btn sm" style="width:100%;text-decoration:none;text-align:center" href="${url(downloadPath, req.ctx)}">Télécharger le sujet</a>
     </article>`;
-  }).join('') : '<div class="empty">Aucun sujet de révision disponible.</div>';
-  const semestersHtml = catalog.semesters.map(({ template, semester }) => `<div class="archive-semester card">
-      <div class="row spread"><b>S${semester.number} — ${esc(semester.name)}</b><span class="chip gray">${esc(template.level_name || '—')}</span></div>
-      <div class="small muted" style="margin-top:6px">${esc(template.program_name || '—')} · ${esc(template.year_label || '—')} · ${semester.units.reduce((n, u) => n + u.courses.length, 0)} matières</div>
-    </div>`).join('');
+  }).join('') : '<div class="empty">Aucun document importé dans les archives.</div>';
   const body = `<div class="archive-intro">
       <h1>Archives</h1>
       <form class="archive-search" id="archive-search-form" method="get" action="/archives" role="search" autocomplete="off">
@@ -753,13 +741,9 @@ const renderArchivesPage = async (req, res) => {
       </form>
     </div>
     <section class="archive-section" aria-labelledby="archive-subjects-title">
-      <div class="section-title"><h2 id="archive-subjects-title">Sujets de révision</h2><span class="tiny muted">${catalog.documents.length} document${catalog.documents.length > 1 ? 's' : ''}</span></div>
+      <div class="section-title"><h2 id="archive-subjects-title">Documents importés</h2><span class="tiny muted">${catalog.documents.length} document${catalog.documents.length > 1 ? 's' : ''}</span></div>
       <div class="archive-subject-grid" id="archive-subjects-list">${subjectsHtml}</div>
       <div class="empty" id="archive-search-empty"${matchingDocuments.length || !searchQuery && !selectedYear && !selectedLevel && !selectedProgram && !selectedType ? ' hidden' : ''}>Aucun sujet ne correspond à vos filtres.</div>
-    </section>
-    <section class="archive-section" aria-labelledby="archive-semesters-title">
-      <div class="section-title"><h2 id="archive-semesters-title">Semestres archivés</h2><span class="tiny muted">Tous les niveaux et filières</span></div>
-      <div class="archive-semester-grid">${semestersHtml}</div>
     </section>
     <script>
       (function () {

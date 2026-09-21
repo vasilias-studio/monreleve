@@ -192,14 +192,13 @@ if (imageAnnoncePath) {
 }
 const archivesEtudiant = await appel('/archives', { cookie: cookieEtudiant });
 verifier('archives : page accessible', archivesEtudiant.statut === 200 && /Archives/.test(archivesEtudiant.texte));
-verifier('archives : sujets et téléchargements présents', /Sujets de révision/.test(archivesEtudiant.texte) && /Télécharger le sujet/.test(archivesEtudiant.texte));
-verifier('archives : recherche et menu de filtres présents', /id="archive-search-input"/.test(archivesEtudiant.texte) && /data-archive-search=/.test(archivesEtudiant.texte) && /archive-filter-button/.test(archivesEtudiant.texte) && /archive-filter-menu/.test(archivesEtudiant.texte) && /name="year"/.test(archivesEtudiant.texte) && /name="level"/.test(archivesEtudiant.texte) && /name="type"/.test(archivesEtudiant.texte));
-verifier('archives : niveaux, filières et types de sujets', /Niveau\s+L\d/.test(archivesEtudiant.texte) && /Filière/.test(archivesEtudiant.texte) && /Examen/.test(archivesEtudiant.texte) && /Rattrapage/.test(archivesEtudiant.texte));
-verifier('archives : année des sujets', /Année/.test(archivesEtudiant.texte));
+verifier('archives : uniquement les documents importés', /Documents importés/.test(archivesEtudiant.texte) && !/href="\/archives\/sujets\//.test(archivesEtudiant.texte) && !/Semestres archivés/.test(archivesEtudiant.texte));
+verifier('archives : recherche et menu de filtres présents', /id="archive-search-input"/.test(archivesEtudiant.texte) && /archive-filter-button/.test(archivesEtudiant.texte) && /archive-filter-menu/.test(archivesEtudiant.texte) && /name="year"/.test(archivesEtudiant.texte) && /name="level"/.test(archivesEtudiant.texte) && /name="type"/.test(archivesEtudiant.texte));
+verifier('archives : types Examen et Rattrapage conservés', /Examen/.test(archivesEtudiant.texte) && /Rattrapage/.test(archivesEtudiant.texte));
 verifier('archives : contenus retirés', !/Ressources étudiantes|Retrouvez vos résultats exportables|Mes documents|Chaque sujet est généré/.test(archivesEtudiant.texte));
 verifier('archives : navigation remplace Relevé', /href="\/archives"/.test(archivesEtudiant.texte) && /Archives/.test(archivesEtudiant.texte) && !/href="\/releve"[^>]*>Relevé/.test(archivesEtudiant.texte));
 const archivesFiltrees = await appel('/archives?q=__sujet_inexistant__', { cookie: cookieEtudiant });
-verifier('archives : recherche par Entrée avec repli serveur', archivesFiltrees.statut === 200 && /name="q"/.test(archivesFiltrees.texte) && /Aucun sujet ne correspond/.test(archivesFiltrees.texte) && /style="display:none"/.test(archivesFiltrees.texte));
+verifier('archives : recherche par Entrée avec repli serveur', archivesFiltrees.statut === 200 && /name="q"/.test(archivesFiltrees.texte) && /Aucun sujet ne correspond/.test(archivesFiltrees.texte) && /archive-search-empty/.test(archivesFiltrees.texte));
 propre('/archives', archivesEtudiant);
 const releveCompat = await appel('/releve', { cookie: cookieEtudiant });
 verifier('compatibilité /releve → page Archives', releveCompat.statut === 200 && /Archives|Sujets de révision/.test(releveCompat.texte));
@@ -212,16 +211,11 @@ verifier('saisie : bouton PDF sous les moyennes', /Télécharger mon relevé en 
 verifier('saisie : ancien bloc de moyenne et texte retirés', !/Moyenne du semestre \(en direct\)|Calcul en direct comme dans Excel/.test(saisieEtudiant.texte));
 propre('/saisie avec moyennes S3/S4', saisieEtudiant);
 
-const sujetPath = archivesEtudiant.texte.match(/href="(\/archives\/sujets\/[^"?]+\.pdf)"/)?.[1];
-if (sujetPath) {
-  const sujet = await fetch(BASE + sujetPath, { headers: { Cookie: cookieEtudiant } });
-  verifier('sujet de révision protégé → PDF 200', sujet.status === 200 && /application\/pdf/i.test(sujet.headers.get('content-type') || ''), `statut ${sujet.status}`);
-  verifier('sujet de révision en téléchargement', /attachment/i.test(sujet.headers.get('content-disposition') || ''));
-  const sujetPublic = await appel(sujetPath);
-  verifier('sujet de révision sans session → connexion requise', [301, 302, 303].includes(sujetPublic.statut) && /login/.test(sujetPublic.emplacement));
-} else {
-  verifier('un sujet de révision est proposé', false, 'aucun lien de sujet trouvé');
-}
+const sujetGenerePath = '/archives/sujets/1/1/examen.pdf';
+const sujetGenere = await appel(sujetGenerePath, { cookie: cookieEtudiant });
+verifier('sujets générés automatiquement supprimés', sujetGenere.statut === 404 && /Sujet introuvable|introuvable/i.test(sujetGenere.texte), `statut ${sujetGenere.statut}`);
+const sujetGenerePublic = await appel(sujetGenerePath);
+verifier('ancien téléchargement généré sans session → connexion requise', [301, 302, 303].includes(sujetGenerePublic.statut) && /login/.test(sujetGenerePublic.emplacement));
 
 /* 5. exports PDF (une page) */
 const pdf = await appel('/mon-releve.pdf', { cookie: cookieEtudiant });
