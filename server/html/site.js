@@ -605,6 +605,7 @@ const revisionCourse = (d, wantedId) => {
   return null;
 };
 const fileSlug = (value) => String(value || 'sujet').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase().slice(0, 70) || 'sujet';
+const normalizeArchiveSearch = (value) => String(value || '').toLocaleLowerCase('fr-FR').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
 /** Génère à la demande un sujet PDF pour une matière autorisée par le modèle de l'étudiant. */
 async function buildRevisionSubjectPdf({ template, semester, unit, course }) {
@@ -658,9 +659,14 @@ const renderArchivesPage = async (req, res) => {
     if (!unique.has(String(course.id))) unique.set(String(course.id), { semester, unit, course });
   }
   const subjects = [...unique.values()];
+  const searchQuery = String(req.query.q || '').trim();
+  const normalizedQuery = normalizeArchiveSearch(searchQuery);
+  const archiveSubjectText = ({ semester, unit, course }) => [`S${semester.number}`, semester.name, unit.code, unit.name, course.code, course.name, d.template.level_name, d.template.year_label].filter(Boolean).join(' ');
+  const matchingSubjects = subjects.filter((subject) => !normalizedQuery || normalizeArchiveSearch(archiveSubjectText(subject)).includes(normalizedQuery));
   const subjectsHtml = subjects.length ? subjects.map(({ semester, unit, course }) => {
-    const searchText = [`S${semester.number}`, semester.name, unit.code, unit.name, course.code, course.name, d.template.level_name, d.template.year_label].filter(Boolean).join(' ');
-    return `<article class="archive-subject card" data-archive-search="${esc(searchText)}">
+    const searchText = archiveSubjectText({ semester, unit, course });
+    const initiallyVisible = !normalizedQuery || normalizeArchiveSearch(searchText).includes(normalizedQuery);
+    return `<article class="archive-subject card" data-archive-search="${esc(searchText)}"${initiallyVisible ? '' : ' style="display:none"'}>
       <div class="row spread" style="gap:8px;align-items:flex-start"><span class="chip gray">S${semester.number} · ${esc(unit.code)}</span><span class="tiny muted">PDF</span></div>
       <h3>${esc(course.name)}</h3>
       <p class="small muted">${esc(unit.name)}${course.code ? ` · ${esc(course.code)}` : ''}</p>
@@ -674,19 +680,19 @@ const renderArchivesPage = async (req, res) => {
     </div>`).join('');
   const body = `<div class="archive-intro">
       <h1>Archives</h1>
-      <form class="archive-search" id="archive-search-form" role="search" autocomplete="off">
+      <form class="archive-search" id="archive-search-form" method="get" action="/archives" role="search" autocomplete="off">
         <label class="sr-only" for="archive-search-input">Rechercher dans les archives</label>
         <div class="archive-search-row">
-          <input class="input" id="archive-search-input" type="search" placeholder="Rechercher une matière, une UE ou un semestre" aria-controls="archive-subjects-list"/>
+          <input class="input" id="archive-search-input" name="q" value="${esc(searchQuery)}" type="search" placeholder="Rechercher une matière, une UE ou un semestre" aria-controls="archive-subjects-list"/>
           <button class="icon-btn archive-filter-button" id="archive-search-filter" type="submit" title="Filtrer la recherche" aria-label="Filtrer la recherche"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16l-6 7v5l-4 2v-7L4 5Z"/></svg></button>
         </div>
-        <div class="tiny muted" id="archive-search-status" aria-live="polite">${subjects.length} matière${subjects.length > 1 ? 's' : ''}</div>
+        <div class="tiny muted" id="archive-search-status" aria-live="polite">${matchingSubjects.length} résultat${matchingSubjects.length > 1 ? 's' : ''}</div>
       </form>
     </div>
     <section class="archive-section" aria-labelledby="archive-subjects-title">
       <div class="section-title"><h2 id="archive-subjects-title">Sujets de révision</h2><span class="tiny muted">${subjects.length} matière${subjects.length > 1 ? 's' : ''}</span></div>
       <div class="archive-subject-grid" id="archive-subjects-list">${subjectsHtml}</div>
-      <div class="empty" id="archive-search-empty" hidden>Aucun sujet ne correspond à votre recherche.</div>
+      <div class="empty" id="archive-search-empty"${matchingSubjects.length || !normalizedQuery ? ' hidden' : ''}>Aucun sujet ne correspond à votre recherche.</div>
     </section>
     <section class="archive-section" aria-labelledby="archive-semesters-title">
       <div class="section-title"><h2 id="archive-semesters-title">Semestres archivés</h2><span class="tiny muted">Synthèse</span></div>
@@ -709,13 +715,17 @@ const renderArchivesPage = async (req, res) => {
           cards.forEach(function (card) {
             var match = !term || normalize(card.getAttribute('data-archive-search')).indexOf(term) !== -1;
             card.hidden = !match;
+            card.classList.toggle('is-filtered', !match);
+            card.style.display = match ? '' : 'none';
             if (match) visible += 1;
           });
           empty.hidden = visible !== 0 || cards.length === 0;
+          empty.style.display = visible === 0 && cards.length > 0 ? '' : 'none';
           status.textContent = term ? visible + ' résultat' + (visible > 1 ? 's' : '') : cards.length + ' matière' + (cards.length > 1 ? 's' : '');
         };
         input.addEventListener('input', filter);
         form.addEventListener('submit', function (event) { event.preventDefault(); filter(); input.focus(); });
+        filter();
       })();
     </script>`;
   res.send(stuPage(req, 'Archives', body));

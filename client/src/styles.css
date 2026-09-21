@@ -637,6 +637,8 @@ body.route-saisie .saisie-top-download { margin-top: 10px; }
 .archive-subject-grid,
 .archive-semester-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
 .archive-subject { padding: 14px; display: flex; flex-direction: column; min-height: 182px; }
+.archive-subject[hidden], .archive-subject.is-filtered { display: none !important; }
+#archive-search-empty[hidden] { display: none !important; }
 .archive-subject h3 { margin: 16px 0 4px; font-size: 16px; line-height: 1.15; }
 .archive-subject p { margin: 0 0 10px; flex: 1; }
 .archive-subject-details { display: flex; flex-wrap: wrap; gap: 6px 12px; margin: 0 0 14px; color: var(--muted); font-size: 11px; letter-spacing: .02em; }

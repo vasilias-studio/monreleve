@@ -185,6 +185,8 @@ verifier('archives : recherche et filtrage présents', /id="archive-search-input
 verifier('archives : niveau et année des sujets', /Niveau\s+L\d/.test(archivesEtudiant.texte) && /Année/.test(archivesEtudiant.texte));
 verifier('archives : contenus retirés', !/Ressources étudiantes|Retrouvez vos résultats exportables|Mes documents|Chaque sujet est généré/.test(archivesEtudiant.texte));
 verifier('archives : navigation remplace Relevé', /href="\/archives"/.test(archivesEtudiant.texte) && /Archives/.test(archivesEtudiant.texte) && !/href="\/releve"[^>]*>Relevé/.test(archivesEtudiant.texte));
+const archivesFiltrees = await appel('/archives?q=__sujet_inexistant__', { cookie: cookieEtudiant });
+verifier('archives : recherche par Entrée avec repli serveur', archivesFiltrees.statut === 200 && /name="q"/.test(archivesFiltrees.texte) && /Aucun sujet ne correspond/.test(archivesFiltrees.texte) && /style="display:none"/.test(archivesFiltrees.texte));
 propre('/archives', archivesEtudiant);
 const releveCompat = await appel('/releve', { cookie: cookieEtudiant });
 verifier('compatibilité /releve → page Archives', releveCompat.statut === 200 && /Archives|Sujets de révision/.test(releveCompat.texte));
