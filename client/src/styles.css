@@ -619,6 +619,8 @@ body.route-releve main,
 body.route-saisie main,
 body.route-archives main { max-width: 1080px; }
 
+body.route-saisie .saisie-top-averages { margin: 0 0 14px; padding: 14px; }
+
 /* Archives : cartes de ressources lisibles sur mobile comme sur bureau. */
 .archive-intro { padding: 10px 2px 18px; }
 .archive-intro h1 { margin: 7px 0 8px; font-size: clamp(2rem, 8vw, 3.4rem); letter-spacing: -.07em; line-height: .95; }

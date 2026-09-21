@@ -556,7 +556,12 @@ r.get('/saisie', need('student'), H(async (req, res) => {
         <td class="note-cell n"><input class="gin" type="number" step="0.01" min="0" max="20" name="r_${c.id}" value="${c.rattrapage ?? ''}" placeholder="—"/></td>
         <td class="n"><b id="def${c.id}">${fmt(c.definitive)}</b> <span id="st${c.id}">${statusChip(c.status)}</span></td></tr>`).join('') || '');
   }).join('');
-  const body = `<div class="section-title"><h1 style="font-size:18px;margin:0">Saisie de notes — S${cur.number} <span id="dirty" class="tiny" style="display:none;color:var(--warn)">· modifié, pensez à enregistrer</span></h1><span class="tiny muted">Calcul en direct comme dans Excel — enregistré puis revérifié par le serveur</span></div>
+  const semestres34 = [3, 4].map((number) => d.personal.semesters.find((s) => Number(s.number) === number)).filter(Boolean);
+  const topAverages = semestres34.length ? `<section class="saisie-top-averages card" aria-labelledby="saisie-top-averages-title">
+      <div class="section-title" style="margin-bottom:10px"><h2 id="saisie-top-averages-title" style="font-size:16px;margin:0">Moyennes des semestres</h2><span class="tiny muted">S3 et S4</span></div>
+      <div class="cards2">${semestres34.map((s) => `<div class="stat"><div class="v"><span id="topsa${s.id}">${fmt(s.average)}</span><span class="tiny muted">/20</span></div><div class="k">Moyenne S${s.number}</div></div>`).join('')}</div>
+    </section>` : '';
+  const body = topAverages + `<div class="section-title"><h1 style="font-size:18px;margin:0">Saisie de notes — S${cur.number} <span id="dirty" class="tiny" style="display:none;color:var(--warn)">· modifié, pensez à enregistrer</span></h1><span class="tiny muted">Calcul en direct comme dans Excel — enregistré puis revérifié par le serveur</span></div>
     <div class="cards2" style="margin-bottom:10px">
       <div class="stat"><div class="v"><span id="sa${cur.id}">${fmt(cur.average)}</span><span class="tiny muted">/20</span></div><div class="k">Moyenne du semestre (en direct)</div></div>
       <div class="stat"><div class="v"><span id="ga">${fmt(d.personal.generalAverage)}</span><span class="tiny muted">/20</span></div><div class="k">Moyenne générale (en direct)</div></div>
@@ -569,11 +574,7 @@ r.get('/saisie', need('student'), H(async (req, res) => {
         <tbody>${rows}</tbody></table>
         <div style="margin-top:10px"><button class="btn">Enregistrer le semestre</button></div>
       </form>
-    </div>` + liveCalcScript({ rules: d.personal.rules, tree: liveTree(d.semesters), source: liveScores(d.personal) }) +
-    `<section class="saisie-releve-fusion" aria-labelledby="releve-fusion-title">
-      <div class="section-title" style="margin-top:28px"><h2 id="releve-fusion-title" style="font-size:18px;margin:0">Relevé complet</h2><span class="tiny muted">Notes personnelles, résultats officiels, synthèses et exports</span></div>
-      ${renderReleveSection(req, d, { basePath: '/saisie' })}
-    </section>`;
+    </div>` + liveCalcScript({ rules: d.personal.rules, tree: liveTree(d.semesters), source: liveScores(d.personal) });
   res.send(stuPage(req, 'Saisie', body));
 }));
 
@@ -589,88 +590,6 @@ r.post('/saisie/:semId', need('student'), H(async (req, res) => {
   await tx(async () => { for (const cid of ids) await stmt.run(stud.id, cid, score(req.body['n_' + cid] ?? ''), score(req.body['r_' + cid] ?? '')); });
   res.redirect(303, url('/saisie', { ...req.ctx, sem: sem.id, ok: 'Notes enregistrées · moyennes recalculées.' }));
 }));
-
-const releveTable = (sem, { editable = false, locked = false } = {}) => `
-  <div class="card" style="padding:6px 10px;overflow-x:auto">
-  <table class="tbl"><thead><tr><th>Matière</th><th class="n">Coef</th><th class="n">Créd.</th><th class="n">Normale</th><th class="n">Rattr.</th><th class="n">Déf.</th><th class="n">Crédits</th><th>Statut</th></tr></thead><tbody>
-  ${sem.units.map((u) => `<tr class="ue-head"><td colspan="8">${esc(u.code)} — ${esc(u.name)} · moyenne <b>${fmt(u.average)}/20</b></td></tr>` +
-    u.courses.map((c) => `<tr><td>${esc(c.name)}</td><td class="n">${fmt(c.coefficient, 0)}</td><td class="n">${fmt(c.credits, 0)}</td>
-      <td class="n">${fmt(c.normal)}</td><td class="n">${fmt(c.rattrapage)}</td><td class="n"><b>${fmt(c.definitive)}</b></td>
-      <td class="n">${fmt(c.creditsEarned, 0)}/${fmt(c.credits, 0)}</td><td>${statusChip(c.status)}</td></tr>`).join('')).join('')}
-  <tr><td colspan="5"><b>Moyenne du semestre</b></td><td class="n"><b>${fmt(sem.average)}</b>/20</td><td class="n"><b>${fmt(sem.creditsEarned, 0)}</b>/${fmt(sem.ectsExpected || 0, 0)}</td><td></td></tr>
-  </tbody></table></div>`;
-
-/* ------------------------------------------------------------------ */
-/* Relevé fusionné dans Saisie                                          */
-/* ------------------------------------------------------------------ */
-/**
- * Rend le bloc complet qui se trouvait auparavant sur /releve.
- * Il reste volontairement unique : /saisie l'affiche sous le formulaire et
- * conserve donc les mêmes calculs, sélecteurs, tableaux et exports.
- */
-const renderReleveSection = (req, d, { basePath = '/saisie' } = {}) => {
-  const src = req.query.source === 'official' ? 'official' : 'personal';
-  const sems = src === 'official' ? d.officialVisible : d.personal.semesters;
-  const tot = src === 'official' ? d.official : d.personal;
-  const autre = src === 'official' ? d.personal : d.official;
-  const pct = tot.creditsExpected ? Math.min(100, Math.round((tot.creditsEarned / tot.creditsExpected) * 100)) : 0;
-  const switchBase = { ...req.ctx, sem: req.query.sem || undefined };
-
-  const segments = `<div class="segments" style="width:auto">
-      <a class="${src === 'personal' ? 'on' : ''}" href="${url(basePath, { ...switchBase, source: 'personal' })}" style="text-decoration:none;color:inherit"><button type="button" class="btn mini" style="${src === 'personal' ? '' : 'background:transparent;color:var(--muted);box-shadow:none'}">Mes notes</button></a>
-      <a class="${src === 'official' ? 'on' : ''}" href="${url(basePath, { ...switchBase, source: 'official' })}" style="text-decoration:none;color:inherit"><button type="button" class="btn mini" style="${src === 'official' ? '' : 'background:transparent;color:var(--muted);box-shadow:none'}">Officiel</button></a>
-    </div>`;
-
-  const resume = `<div class="hero">
-    <div class="row spread"><span class="chip" style="background:rgba(255,255,255,.14);border:1px solid transparent">${esc(req.user.first_name)}</span><span class="chip" style="background:rgba(255,255,255,.14);border:1px solid transparent">${esc(d.template.name)}</span></div>
-    <div class="big" style="margin-top:10px">${fmt(tot.generalAverage)}<span style="font-size:18px;font-weight:600">/20</span></div>
-    <div class="muted small">Moyenne générale ${src === 'official' ? 'officielle' : 'personnelle'} · ${src === 'official' ? 'personnelle' : 'officielle'} : <b style="color:#fff">${fmt(autre.generalAverage)}</b></div>
-    <div class="bar" style="margin-top:12px;background:rgba(255,255,255,.08)"><i style="width:${pct}%;background:#fff"></i></div>
-    <div class="muted small" style="margin-top:6px">Crédits obtenus : <b style="color:#fff">${fmt(tot.creditsEarned, 0)}</b> / ${fmt(tot.creditsExpected, 0)} ECTS${tot.creditsRemaining != null ? ` · restants : ${fmt(tot.creditsRemaining, 0)}` : ''}</div>
-  </div>`;
-
-  const stats = `<div class="cards2" style="margin-top:12px">
-      <div class="stat ${tot.counts.validees ? 'ok' : ''}"><div class="v">${tot.counts.validees}</div><div class="k">Validées</div></div>
-      <div class="stat ${tot.counts.non_validees ? 'bad' : ''}"><div class="v">${tot.counts.non_validees}</div><div class="k">Non validées</div></div>
-      <div class="stat ${tot.counts.rattrapage ? 'warn' : ''}"><div class="v">${tot.counts.rattrapage}</div><div class="k">Rattrapages</div></div>
-      <div class="stat"><div class="v">${tot.counts.en_attente}</div><div class="k">En attente</div></div>
-    </div>`;
-
-  const actions = `<div class="row" style="gap:8px;margin:14px 2px;flex-wrap:wrap">
-      <a class="btn sm" style="width:auto;flex:1;text-decoration:none;text-align:center" href="${url('/saisie', { ...req.ctx, sem: req.query.sem || undefined })}">Saisir mes notes</a>
-      <a class="btn sm ghost" style="width:auto;flex:1;text-decoration:none;text-align:center" href="${url('/mon-releve.pdf', { ...req.ctx, source: src })}">Exporter en PDF — une page</a>
-      <a class="btn sm ghost" style="width:auto;flex:1;text-decoration:none;text-align:center" href="${url('/mon-releve.xlsx', { ...req.ctx, source: src })}">Exporter en Excel</a>
-    </div>`;
-
-  const tables = sems.map((s) => `<div class="sem-title"><h2>S${s.number} — ${esc(s.name)}</h2>
-      <span class="row" style="gap:8px;align-items:center">${pubChip((d.pubs[s.id] || {}).status || 'draft')}
-      <a class="link-btn" href="${url('/saisie', { ...req.ctx, sem: s.id, source: src })}">Saisir</a></span></div>${releveTable(s)}`).join('');
-
-  const progres = sems.length ? `<div class="card" style="margin-top:14px;text-align:center">
-      <div class="tiny muted">Moyenne générale (${src === 'official' ? 'officiel' : 'mes notes'})</div>
-      <div style="font-size:30px;font-weight:850">${fmt(tot.generalAverage)}/20</div>
-      <div class="small muted">Crédits : ${fmt(tot.creditsEarned, 0)} / ${fmt(tot.creditsExpected, 0)} ECTS</div>
-    </div>
-    <div class="cards2">
-      <div class="stat"><div class="v">${fmt(tot.generalAverage)}</div><div class="k">Moyenne générale</div></div>
-      <div class="stat ok"><div class="v">${fmt(tot.creditsEarned, 0)}</div><div class="k">Crédits obtenus</div></div>
-      <div class="stat ${tot.creditsRemaining > 0 ? 'warn' : 'ok'}"><div class="v">${fmt(tot.creditsRemaining, 0)}</div><div class="k">Crédits restants</div></div>
-    </div>
-    <div class="stack" style="margin-top:10px">${sems.map((s) => `<div class="card">
-      <div class="row spread"><b>S${s.number} — ${esc(s.name)}</b><span class="row" style="gap:10px;align-items:center"><span>${fmt(s.average)}/20</span><a class="link-btn tiny" href="${url('/saisie', { ...req.ctx, sem: s.id, source: src })}">Saisir</a></span></div>
-      <div class="bar" style="margin-top:8px"><i style="width:${s.ectsExpected ? Math.min(100, (s.creditsEarned / s.ectsExpected) * 100) : 0}%"></i></div>
-      <div class="tiny muted" style="margin-top:4px">Crédits ${fmt(s.creditsEarned, 0)}/${fmt(s.ectsExpected || 0, 0)}</div>
-      <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:8px">${s.units.map((u) => chip(`${esc(u.code)} : ${fmt(u.average)}`, u.average == null ? 'gray' : u.average >= 10 ? 'ok' : 'bad')).join('')}</div>
-    </div>`).join('')}</div>` : '';
-
-  return `<div class="row spread" style="margin:4px 2px 12px"><h2 style="font-size:18px;margin:0">Relevé de notes</h2>${segments}</div>
-    ${resume}
-    ${stats}
-    ${actions}
-    ${src === 'official' && !sems.length ? '<div class="empty">Aucun résultat officiel publié pour l’instant.</div>' : ''}
-    ${tables}
-    ${progres ? `<h3 class="section-title" style="font-size:13px;margin-top:22px">Moyennes & progression</h3>${progres}` : ''}`;
-};
 
 /* ------------------------------------------------------------------ */
 /* Archives : sujets de révision protégés par la session étudiante       */

@@ -44,6 +44,7 @@ window.MRLIVE=${json};
     var out=window.__MRE.computeReleve(tpl, cfg.tree, toMap());
     out.semesters.forEach(function(sem){
       var sa=document.getElementById('sa'+sem.id); if(sa) sa.textContent=fmt2(sem.average);
+      var topSa=document.getElementById('topsa'+sem.id); if(topSa) topSa.textContent=fmt2(sem.average);
       var tab=document.getElementById('tab'+sem.id); if(tab) tab.innerHTML='S'+sem.number+(sem.average!=null?' · '+fmt2(sem.average):'');
       sem.units.forEach(function(u){
         var ue=document.getElementById('ue'+u.id); if(ue) ue.textContent=fmt2(u.average);

@@ -187,9 +187,10 @@ const releveCompat = await appel('/releve', { cookie: cookieEtudiant });
 verifier('compatibilité /releve → page Archives', releveCompat.statut === 200 && /Archives|Sujets de révision/.test(releveCompat.texte));
 propre('/releve', releveCompat);
 const saisieEtudiant = await appel('/saisie', { cookie: cookieEtudiant });
-verifier('saisie : contenu du relevé fusionné', saisieEtudiant.statut === 200 && /Saisie de notes/.test(saisieEtudiant.texte) && /Relevé complet/.test(saisieEtudiant.texte) && /Mes notes/.test(saisieEtudiant.texte) && /Moyennes.*progression/i.test(saisieEtudiant.texte));
-verifier('saisie : exports PDF et Excel conservés', /mon-releve\.pdf/.test(saisieEtudiant.texte) && /mon-releve\.xlsx/.test(saisieEtudiant.texte));
-propre('/saisie fusionnée', saisieEtudiant);
+verifier('saisie : moyennes S3 et S4 en haut', saisieEtudiant.statut === 200 && /Moyennes des semestres/.test(saisieEtudiant.texte) && /Moyenne S3/.test(saisieEtudiant.texte) && /Moyenne S4/.test(saisieEtudiant.texte) && saisieEtudiant.texte.indexOf('Moyennes des semestres') < saisieEtudiant.texte.indexOf('Saisie de notes'));
+verifier('saisie : ancien relevé retiré', !/saisie-releve-fusion|Relevé complet|Moyennes & progression/.test(saisieEtudiant.texte));
+verifier('saisie : formulaire et calcul en direct conservés', /Saisie de notes/.test(saisieEtudiant.texte) && /Moyenne générale \(en direct\)/.test(saisieEtudiant.texte));
+propre('/saisie avec moyennes S3/S4', saisieEtudiant);
 
 const sujetPath = archivesEtudiant.texte.match(/href="(\/archives\/sujets\/[^"?]+\.pdf)"/)?.[1];
 if (sujetPath) {
