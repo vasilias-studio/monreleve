@@ -1583,11 +1583,15 @@ body.messenger-inbox .tabbar {
   color: #161513;
 }
 
-/* L’interface d’administration conserve sa barre de navigation sur les deux vues Messenger. */
+/* Les pages Messenger administrateur gardent la barre avec le prénom et la navigation. */
+body.messenger-inbox.role-admin .topbar,
+body.messenger-conversation.role-admin .topbar {
+  display: flex !important;
+}
 body.messenger-inbox.role-admin .admin-nav,
 body.messenger-conversation.role-admin .admin-nav {
   display: flex !important;
-  top: 0;
+  top: 68px;
 }
 
 /* Photo d'une publication classique : affichage pleine largeur façon Facebook.

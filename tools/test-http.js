@@ -99,11 +99,13 @@ for (const [chemin, attendu] of [
     verifier('archives admin : années 2022-2027 disponibles', ['2022-2023', '2023-2024', '2024-2025', '2025-2026', '2026-2027', '2027-2028'].every((year) => r.texte.includes(`>${year}</option>`)));
   }
   if (chemin === '/admin/messages') {
+    verifier('messagerie admin : barre prénom visible', /<header class="topbar topbar-page"/.test(r.texte) && /class="topbar-name"/.test(r.texte));
     verifier('messagerie admin : liste des étudiants', /messenger-contact/.test(r.texte) && /messenger-inbox-page/.test(r.texte));
     const studentConversation = r.texte.match(/href="\/admin\/messages\?student=(\d+)"/);
     if (studentConversation) {
       const conversation = await appel(`/admin/messages?student=${studentConversation[1]}`, { cookie: cookieAdmin });
       verifier('messagerie admin : conversation étudiant', conversation.statut === 200 && /messenger-conversation-page/.test(conversation.texte) && /messenger-thread/.test(conversation.texte) && /messenger-composer/.test(conversation.texte));
+      verifier('conversation admin : barre prénom visible', /<header class="topbar topbar-page"/.test(conversation.texte) && /class="topbar-name"/.test(conversation.texte));
       propre('messagerie admin', conversation);
     } else {
       verifier('messagerie admin : conversation étudiant', false, 'aucun étudiant dans la liste');
