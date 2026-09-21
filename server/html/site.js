@@ -628,14 +628,14 @@ async function loadArchiveCatalog() {
       }
     }
   }
-  const imported = await db.prepare(`SELECT ad.id, ad.subject, ad.kind, ad.file_name, ad.mime, ad.content, ad.size,
+  const imported = await db.prepare(`SELECT ad.id, ad.subject, ad.kind, ad.file_name, ad.mime, ad.size,
       y.label AS year_label, l.name AS level_name
     FROM archive_documents ad
     LEFT JOIN academic_years y ON y.id=ad.academic_year_id
     JOIN levels l ON l.id=ad.level_id
     ORDER BY ad.created_at DESC, ad.id DESC`).all();
   for (const row of imported) documents.push({
-    source: 'uploaded', id: row.id, kind: row.kind, file_name: row.file_name, mime: row.mime, content: row.content, size: row.size,
+    source: 'uploaded', id: row.id, kind: row.kind, file_name: row.file_name, mime: row.mime, size: row.size,
     template: { id: null, name: 'Document importé', program_name: 'Toutes les filières', level_name: row.level_name, year_label: row.year_label },
     semester: { number: null, name: 'Archive' }, unit: { code: 'ARCHIVE', name: 'Sujet importé' }, course: { id: row.id, name: row.subject, code: null },
   });
