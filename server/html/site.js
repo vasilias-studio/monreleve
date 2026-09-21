@@ -1843,11 +1843,10 @@ async function ensureArchiveYears() {
   const existing = await db.prepare(`SELECT id, label, start_year FROM academic_years
     WHERE start_year BETWEEN ? AND ? OR label IN (${placeholders})`)
     .all(ARCHIVE_YEAR_MIN, ARCHIVE_YEAR_MAX, ...labels);
-  const byStart = new Map(existing.filter((row) => row.start_year !== null && row.start_year !== undefined && Number.isInteger(Number(row.start_year))).map((row) => [Number(row.start_year), row]));
   const byLabel = new Map(existing.map((row) => [String(row.label), row]));
   for (let year = ARCHIVE_YEAR_MIN; year <= ARCHIVE_YEAR_MAX; year += 1) {
     const label = archiveYearLabel(year);
-    if (byStart.has(year) || byLabel.has(label)) continue;
+    if (byLabel.has(label)) continue;
     try {
       await db.prepare('INSERT INTO academic_years (label, start_year, is_current) VALUES (?,?,0)').run(label, year);
     } catch (error) {
