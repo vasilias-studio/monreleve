@@ -26,8 +26,9 @@ const SEEDS = [
   ['forgot.html', '/forgot', null],
   ['accueil.html', '/accueil', 'student'],
   ['saisie.html', '/saisie', 'student'],
+  ['archives.html', '/archives', 'student'],
   ['releve.html', '/releve', 'student'],
-  ['releve-officiel.html', '/releve?source=official', 'student'],
+  ['releve-officiel.html', '/saisie?source=official', 'student'],
   /* ?weeks=13 : la copie statique embarque 13 semaines (≈ 3 mois) autour de la date d'export,
      pour pouvoir avancer/reculer d'un jour à la fois comme un vrai calendrier */
   ['calendrier.html', '/calendrier?weeks=13', 'student'],
@@ -48,11 +49,11 @@ const SEEDS = [
 
 /* routes considérées comme pages (→ candidate à l'export) ; le reste reste tel quel */
 const PAGE_PATHS = new Set([
-  '/', '/login', '/register', '/forgot', '/reset', '/accueil', '/saisie', '/releve', '/moyennes', '/calendrier', '/messages', '/profil',
+  '/', '/login', '/register', '/forgot', '/reset', '/accueil', '/saisie', '/archives', '/releve', '/moyennes', '/calendrier', '/messages', '/profil',
   '/admin', '/admin/etudiants', '/admin/modeles', '/admin/referentiels', '/admin/import', '/admin/emploi', '/admin/messages',
 ]);
 /* aliases : une route supprimée/équivalente pointe vers la page canonique */
-const ALIAS = { '/reset': '/login', '/moyennes': '/releve', '/': '/accueil' };
+const ALIAS = { '/reset': '/login', '/moyennes': '/saisie', '/releve': '/archives', '/': '/accueil' };
 
 /* script inséré dans chaque page : thème local via localStorage (pas de cookie en statique) */
 /* bandeau inséré en tête de contenu : la copie statique s'annonce (consultation seule) */
@@ -106,7 +107,7 @@ const normKey = (u) => {
     .filter((kv) => kv && !/^(t|th|d|weeks)=/.test(kv)).sort();
   return keep.length ? `${path}?${keep.join('&')}` : path;
 };
-const fileForKey = (key) => `${key.replace(/^\//, '').replace(/[?&=]/g, (c) => ({ '?': '-', '&': '-', '=': '' }[c]))}.html`;
+const fileForKey = (key) => `${key.replace(/^\//, '').replace(/[/?&=]/g, (c) => ({ '/': '-', '?': '-', '&': '-', '=': '' }[c]))}.html`;
 
 async function main() {
   const css = readFileSync('client/src/styles.css', 'utf8') + `
@@ -150,7 +151,8 @@ async function main() {
     for (const m of html.matchAll(/(?:href|action)="(\/[^"#]*)"/g)) {
       const key = normKey(m[1]);
       const path = key.split('?')[0];
-      if (!PAGE_PATHS.has(path) || byKey.has(key)) continue;
+      const isAnnouncementDetail = /^\/accueil\/annonces\/\d+$/.test(path);
+      if ((!PAGE_PATHS.has(path) && !isAnnouncementDetail) || byKey.has(key)) continue;
       const file = fileForKey(key);
       byKey.set(key, file);
       queue.push({ file, url: key, who: entry.who, key });
@@ -161,8 +163,18 @@ async function main() {
   rmSync(OUT, { recursive: true, force: true }); // jamais de fichier périmé dans l'export
   mkdirSync(OUT, { recursive: true });
   let n = 0;
-  for (const { file, html } of fetched) {
+  for (const { file, html, who } of fetched) {
     let h = html.replace('<link rel="stylesheet" href="/style.css"/>', `<style>\n${css}\n</style>`);
+    /* Les photos jointes sont des blobs BDD : l'export les embarque dans le HTML,
+       sans réintroduire une image globale ou une URL serveur. */
+    const imageUrls = [...h.matchAll(/url\(['"]?(\/accueil\/annonces\/\d+\/image[^'") ]*)['"]?\)/g)].map((m) => m[1]);
+    for (const src of [...new Set(imageUrls)]) {
+      const ir = await fetch(BASE + src, { headers: tokens[who] ? { Cookie: tokens[who] } : {} });
+      if (!ir.ok) continue;
+      const mime = ir.headers.get('content-type') || 'image/jpeg';
+      const b64 = Buffer.from(await ir.arrayBuffer()).toString('base64');
+      h = h.replaceAll(src, `data:${mime};base64,${b64}`);
+    }
     h = h.replace(/((?:href|action|data-[a-z0-9-]+))="([^"]*)"/g, (m, attr, u) => {
       if (!u.startsWith('/')) return m;
       const dest = byKey.get(normKey(u));
@@ -196,7 +208,7 @@ async function main() {
     if (iMain >= 0) h = h.slice(0, iMain) + STATIC_NOTE + h.slice(iMain);
     h = h.replace('</body>', THEME_JS + '\n</body>');
     /* garde : un export qui contient encore un jeton est un export raté */
-    if (/eyJ/.test(h)) throw new Error(`${file} : jeton de session encore présent — export interrompu`);
+    if (/(?:[?&](?:t|token)=|(?:name|value|href|action)=["'][^"']*)eyJ/.test(h)) throw new Error(`${file} : jeton de session encore présent — export interrompu`);
     writeFileSync(join(OUT, file), h);
     n++; console.log(`✓ ${file}`);
   }

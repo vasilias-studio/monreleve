@@ -111,6 +111,16 @@ CREATE TABLE IF NOT EXISTS admins (              -- profil administrateur
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS profile_photos (       -- photo personnelle de chaque compte
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+  file_name TEXT,
+  mime TEXT NOT NULL,
+  content BLOB NOT NULL,
+  size INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS templates (           -- modèles de relevé (Filière→Niveau→Année)
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   program_id INTEGER NOT NULL REFERENCES programs(id) ON DELETE CASCADE,
@@ -198,6 +208,15 @@ CREATE TABLE IF NOT EXISTS announcements (       -- fil d'annonces de l'accueil 
 );
 CREATE INDEX IF NOT EXISTS idx_ann_created ON announcements(pinned DESC, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS announcement_images (  -- image jointe à une annonce, stockée en base
+  announcement_id INTEGER PRIMARY KEY REFERENCES announcements(id) ON DELETE CASCADE,
+  file_name TEXT,
+  mime TEXT NOT NULL,
+  content BLOB NOT NULL,
+  size INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS admin_messages (     -- messages privés envoyés par les étudiants à l'administration
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   sender_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -208,6 +227,16 @@ CREATE TABLE IF NOT EXISTS admin_messages (     -- messages privés envoyés par
 );
 CREATE INDEX IF NOT EXISTS idx_admin_messages_status ON admin_messages(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_admin_messages_sender ON admin_messages(sender_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS admin_message_replies ( -- réponses de l'administration dans une conversation
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  student_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  sender_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  body TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'unread' CHECK(status IN ('unread', 'read')),
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_admin_message_replies_student ON admin_message_replies(student_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS announcement_likes (  -- « J'aime » (un par personne et par annonce)
   announcement_id INTEGER NOT NULL REFERENCES announcements(id) ON DELETE CASCADE,

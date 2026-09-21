@@ -30,7 +30,14 @@ async function appel(chemin, { methode = 'GET', corps = null, cookie = null, typ
   const r = await fetch(BASE + chemin, { method: methode, headers: entetes, body, redirect: 'manual' });
   const texte = await r.text().catch(() => '');
   const setCookie = r.headers.getSetCookie ? r.headers.getSetCookie() : [r.headers.get('set-cookie')].filter(Boolean);
-  return { statut: r.status, texte, cookie: setCookie.map((c) => c.split(';')[0]).join('; '), emplacement: r.headers.get('location') || '' };
+  return {
+    statut: r.status,
+    texte,
+    cookie: setCookie.map((c) => c.split(';')[0]).join('; '),
+    emplacement: r.headers.get('location') || '',
+    type: r.headers.get('content-type') || '',
+    disposition: r.headers.get('content-disposition') || '',
+  };
 }
 
 const propre = (nom, reponse) => {
@@ -77,7 +84,21 @@ for (const [chemin, attendu] of [
   verifier(`GET ${chemin} → 200`, r.statut === 200, `statut ${r.statut}`);
   verifier(`GET ${chemin} : contenu attendu`, attendu.test(r.texte));
   propre(chemin, r);
-  if (chemin === '/accueil') verifier('HTML étudiant/admin sans jeton de session', !/[?&]t=/.test(r.texte) && !/name="t"/.test(r.texte));
+  if (chemin === '/accueil') {
+    verifier('HTML étudiant/admin sans jeton de session', !/[?&]t=/.test(r.texte) && !/name="t"/.test(r.texte));
+    verifier('composeur admin : image jointe et multipart', /enctype="multipart\/form-data"/.test(r.texte) && /name="image"/.test(r.texte));
+  }
+  if (chemin === '/admin/messages') {
+    verifier('messagerie admin : liste des étudiants', /messenger-contact/.test(r.texte) && /messenger-inbox-page/.test(r.texte));
+    const studentConversation = r.texte.match(/href="\/admin\/messages\?student=(\d+)"/);
+    if (studentConversation) {
+      const conversation = await appel(`/admin/messages?student=${studentConversation[1]}`, { cookie: cookieAdmin });
+      verifier('messagerie admin : conversation étudiant', conversation.statut === 200 && /messenger-conversation-page/.test(conversation.texte) && /messenger-thread/.test(conversation.texte) && /messenger-composer/.test(conversation.texte));
+      propre('messagerie admin', conversation);
+    } else {
+      verifier('messagerie admin : conversation étudiant', false, 'aucun étudiant dans la liste');
+    }
+  }
 }
 
 /* 3. API JSON (mêmes données, autre façade) — authentification par jeton porteur */
@@ -120,22 +141,76 @@ for (const chemin of ['/accueil', '/saisie', '/releve', '/calendrier?weeks=2', '
   propre(`étudiant ${chemin}`, r);
   if (chemin === '/messages') {
     verifier('navigation : bouton message présent', /pb-send|Envoyer un message/i.test(r.texte));
+    verifier('messagerie : liste de contacts', /messenger-contact/.test(r.texte) && /messenger-inbox-page/.test(r.texte));
     verifier('formulaire de message présent', /name="subject"/.test(r.texte) && /name="body"/.test(r.texte));
+    const conversation = await appel('/messages?conversation=admin', { cookie: cookieEtudiant });
+    verifier('messagerie : conversation étudiant', conversation.statut === 200 && /messenger-conversation-page/.test(conversation.texte) && /messenger-thread/.test(conversation.texte) && /messenger-composer/.test(conversation.texte));
+    propre('messagerie étudiant', conversation);
   }
 }
 const enteteAccueil = await appel('/accueil', { cookie: cookieEtudiant });
-verifier('barre Frame-115 sur l accueil', /topbar-home/.test(enteteAccueil.texte) && /topbar-avatar/.test(enteteAccueil.texte) && /Bonjour/.test(enteteAccueil.texte));
+const topbarAccueil = enteteAccueil.texte.match(/<header class="topbar[\s\S]*?<\/header>/)?.[0] || '';
+verifier('barre Frame-115 sur l accueil', /topbar-home/.test(topbarAccueil) && /topbar-avatar/.test(topbarAccueil) && /Bonjour/.test(topbarAccueil) && /topbar-theme/.test(topbarAccueil) && !/Se déconnecter/.test(topbarAccueil));
+const enteteProfil = await appel('/profil', { cookie: cookieEtudiant });
+const topbarProfil = enteteProfil.texte.match(/<header class="topbar[\s\S]*?<\/header>/)?.[0] || '';
+verifier('barre Frame-115 sur les autres pages', /topbar-page/.test(topbarProfil) && /topbar-name/.test(topbarProfil) && !/topbar-greeting/.test(topbarProfil));
+verifier('profil : bouton retour et navigation basse masquée', /topbar-back/.test(topbarProfil) && !/class="tabbar"/.test(enteteProfil.texte));
+verifier('profil : ajout photo et déconnexion', /name="photo"/.test(enteteProfil.texte) && /Se déconnecter/.test(enteteProfil.texte));
+const profilAdmin = await appel('/profil', { cookie: cookieAdmin });
+verifier('profil admin : photo et retour disponibles', profilAdmin.statut === 200 && /name="photo"/.test(profilAdmin.texte) && /topbar-back/.test(profilAdmin.texte));
 const enteteSombre = await appel('/accueil?th=dark', { cookie: cookieEtudiant });
 verifier('barre Frame-115 en mode sombre', /<html[^>]+data-theme="dark"/.test(enteteSombre.texte) && /topbar-home/.test(enteteSombre.texte));
-const releveEtudiant = await appel('/releve', { cookie: cookieEtudiant });
-verifier('relevé : moyenne calculée présente',
-  /<b>\d{1,2}([.,]\d{1,2})?\s*\/\s*20<\/b>|moyenne/i.test(releveEtudiant.texte));
-verifier('relevé : pas d\'erreur affichée', !/Une erreur|erreur inattendue/i.test(releveEtudiant.texte));
+const annonceAccueil = await appel('/accueil', { cookie: cookieEtudiant });
+const idAnnonceAccueil = annonceAccueil.texte.match(/href="\/accueil\/annonces\/(\d+)"/)?.[1];
+const imageAnnoncePath = annonceAccueil.texte.match(/\/accueil\/annonces\/(\d+)\/image/)?.[0];
+verifier('accueil : carrousel et cartes d annonces BDD', /announcement-carousel|post-main/.test(annonceAccueil.texte) && Boolean(idAnnonceAccueil));
+verifier('accueil : défilement horizontal toutes les 3 secondes', /setInterval\(function \(\) \{ go\(index \+ 1\); \}, 3000\)/.test(annonceAccueil.texte));
+if (idAnnonceAccueil) {
+  const annonceDetail = await appel(`/accueil/annonces/${idAnnonceAccueil}`, { cookie: cookieEtudiant });
+  verifier('détail annonce → 200', annonceDetail.statut === 200, `statut ${annonceDetail.statut}`);
+  verifier('détail : image, panneau blanc et retour', /announcement-detail-media/.test(annonceDetail.texte) && /announcement-detail-sheet/.test(annonceDetail.texte) && /announcement-back/.test(annonceDetail.texte));
+  verifier('détail : barre supérieure et navigation masquées', !/class="topbar/.test(annonceDetail.texte) && !/class="tabbar/.test(annonceDetail.texte));
+  propre('détail annonce', annonceDetail);
+}
+if (imageAnnoncePath) {
+  const imageAnnonce = await fetch(BASE + imageAnnoncePath, { headers: { Cookie: cookieEtudiant } });
+  verifier('image jointe à l annonce → JPEG servi', imageAnnonce.status === 200 && /image\/jpeg/i.test(imageAnnonce.headers.get('content-type') || ''), `statut ${imageAnnonce.status}`);
+} else {
+  verifier('image jointe à l annonce → URL BDD présente', false, 'aucune image jointe trouvée dans le carrousel');
+}
+const archivesEtudiant = await appel('/archives', { cookie: cookieEtudiant });
+verifier('archives : page accessible', archivesEtudiant.statut === 200 && /Archives/.test(archivesEtudiant.texte));
+verifier('archives : sujets et téléchargements présents', /Sujets de révision/.test(archivesEtudiant.texte) && /Télécharger le sujet/.test(archivesEtudiant.texte));
+verifier('archives : navigation remplace Relevé', /href="\/archives"/.test(archivesEtudiant.texte) && /Archives/.test(archivesEtudiant.texte) && !/href="\/releve"[^>]*>Relevé/.test(archivesEtudiant.texte));
+propre('/archives', archivesEtudiant);
+const releveCompat = await appel('/releve', { cookie: cookieEtudiant });
+verifier('compatibilité /releve → page Archives', releveCompat.statut === 200 && /Archives|Sujets de révision/.test(releveCompat.texte));
+propre('/releve', releveCompat);
+const saisieEtudiant = await appel('/saisie', { cookie: cookieEtudiant });
+verifier('saisie : contenu du relevé fusionné', saisieEtudiant.statut === 200 && /Saisie de notes/.test(saisieEtudiant.texte) && /Relevé complet/.test(saisieEtudiant.texte) && /Mes notes/.test(saisieEtudiant.texte) && /Moyennes.*progression/i.test(saisieEtudiant.texte));
+verifier('saisie : exports PDF et Excel conservés', /mon-releve\.pdf/.test(saisieEtudiant.texte) && /mon-releve\.xlsx/.test(saisieEtudiant.texte));
+propre('/saisie fusionnée', saisieEtudiant);
+
+const sujetPath = archivesEtudiant.texte.match(/href="(\/archives\/sujets\/[^"?]+\.pdf)"/)?.[1];
+if (sujetPath) {
+  const sujet = await fetch(BASE + sujetPath, { headers: { Cookie: cookieEtudiant } });
+  verifier('sujet de révision protégé → PDF 200', sujet.status === 200 && /application\/pdf/i.test(sujet.headers.get('content-type') || ''), `statut ${sujet.status}`);
+  verifier('sujet de révision en téléchargement', /attachment/i.test(sujet.headers.get('content-disposition') || ''));
+  const sujetPublic = await appel(sujetPath);
+  verifier('sujet de révision sans session → connexion requise', [301, 302, 303].includes(sujetPublic.statut) && /login/.test(sujetPublic.emplacement));
+} else {
+  verifier('un sujet de révision est proposé', false, 'aucun lien de sujet trouvé');
+}
 
 /* 5. exports PDF (une page) */
 const pdf = await appel('/mon-releve.pdf', { cookie: cookieEtudiant });
 verifier('GET /mon-releve.pdf → 200', pdf.statut === 200, `statut ${pdf.statut}`);
-verifier('PDF renvoyé', pdf.texte.startsWith('%PDF') || /application\/pdf/.test(pdf.texte.slice(0, 200)));
+verifier('PDF renvoyé', pdf.texte.startsWith('%PDF') && /application\/pdf/i.test(pdf.type));
+verifier('PDF en téléchargement', /attachment/i.test(pdf.disposition));
+const xlsx = await appel('/mon-releve.xlsx', { cookie: cookieEtudiant });
+verifier('GET /mon-releve.xlsx → 200', xlsx.statut === 200, `statut ${xlsx.statut}`);
+verifier('Excel renvoyé', /spreadsheetml|application\/vnd\.openxmlformats-officedocument/i.test(xlsx.type));
+verifier('Excel en téléchargement', /attachment/i.test(xlsx.disposition));
 
 /* 6. action d'écriture : « J'aime » sur une annonce (puis retour à l'état initial) */
 const accueilEtudiant = await appel('/accueil', { cookie: cookieEtudiant });
@@ -189,7 +264,7 @@ if (fs.existsSync(fichierTest)) {
 }
 
 /* 7. visiteurs non connectés : les pages privées redirigent */
-for (const chemin of ['/accueil', '/releve', '/admin', '/saisie', '/messages']) {
+for (const chemin of ['/accueil', '/archives', '/releve', '/admin', '/saisie', '/messages']) {
   const r = await appel(chemin);
   verifier(`visiteur ${chemin} → redirection`, [301, 302, 303].includes(r.statut), `statut ${r.statut}`);
 }

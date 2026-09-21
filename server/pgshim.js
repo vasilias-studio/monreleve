@@ -73,7 +73,7 @@ function replaceOutside(sql, re, replacer) {
 const isInsert = (sql) => /^\s*insert\s/i.test(sql);
 
 /** Tables dont la clé primaire n'est pas `id` : pas de `RETURNING id` pour elles. */
-const TABLES_SANS_ID = ['announcement_likes'];
+const TABLES_SANS_ID = ['announcement_likes', 'announcement_images'];
 
 /**
  * Traduit une requête écrite « à la SQLite » vers PostgreSQL.

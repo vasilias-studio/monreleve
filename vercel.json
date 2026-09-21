@@ -7,7 +7,7 @@
     "api/index.js": {
       "memory": 1024,
       "maxDuration": 30,
-      "includeFiles": "{Relev-de-notes.xlsx,client/src/styles.css}"
+      "includeFiles": "{Relev-de-notes.xlsx,client/src/styles.css,client/public/announcement-hero.jpg}"
     }
   },
   "rewrites": [

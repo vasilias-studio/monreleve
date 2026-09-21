@@ -13,10 +13,16 @@ import db, { tx } from './db.js';
 
 /** Annonces visibles par un lecteur : tout le monde pour un admin, sinon ciblage. */
 export async function feed(viewer, { limit = 50 } = {}) {
-  const base = `SELECT a.id, a.body, a.audience, a.pinned, a.created_at, a.program_id,
+  const base = `SELECT a.id, a.author_id, a.body, a.audience, a.pinned, a.created_at, a.program_id,
       u.first_name, u.last_name, u.role AS author_role,
+      CASE WHEN pp.user_id IS NULL THEN 0 ELSE 1 END AS author_has_photo,
+      CASE WHEN ai.announcement_id IS NULL THEN 0 ELSE 1 END AS has_image,
+      ai.mime AS image_mime, ai.file_name AS image_name,
       (SELECT COUNT(*) FROM announcement_likes l WHERE l.announcement_id = a.id) AS likes
-    FROM announcements a LEFT JOIN users u ON u.id = a.author_id`;
+    FROM announcements a
+    LEFT JOIN users u ON u.id = a.author_id
+    LEFT JOIN profile_photos pp ON pp.user_id = a.author_id
+    LEFT JOIN announcement_images ai ON ai.announcement_id = a.id`;
   const order = 'ORDER BY a.pinned DESC, a.created_at DESC, a.id DESC LIMIT ?';
   if (!viewer || viewer.role === 'admin') return await db.prepare(`${base} ${order}`).all(limit);
   return await db.prepare(`${base}

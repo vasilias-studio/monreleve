@@ -20,6 +20,7 @@ import importRouter from './routes/importExport.js';
 import siteRouter from './html/site.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ANNOUNCEMENT_IMAGE = path.join(__dirname, '..', 'client', 'public', 'announcement-hero.jpg');
 
 /**
  * Préparation de la base, au plus une fois par instance :
@@ -32,6 +33,19 @@ export function ensureBootstrap() {
     /* Une première requête initialise aussi le schéma PostgreSQL sur une base neuve.
        Elle reste compatible avec les anciennes bases SQLite/PostgreSQL déjà en place. */
     await db.prepare('SELECT id FROM schedule_slots LIMIT 0').all();
+    /* Migration de la pièce jointe d'annonce : le contenu reste dans Supabase/Postgres
+       ou SQLite, jamais sur le disque de l'instance. */
+    await db.exec(db.isPostgres
+      ? `CREATE TABLE IF NOT EXISTS announcement_images (
+          announcement_id INTEGER PRIMARY KEY REFERENCES announcements(id) ON DELETE CASCADE,
+          file_name TEXT, mime TEXT NOT NULL, content BYTEA NOT NULL,
+          size INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )`
+      : `CREATE TABLE IF NOT EXISTS announcement_images (
+          announcement_id INTEGER PRIMARY KEY REFERENCES announcements(id) ON DELETE CASCADE,
+          file_name TEXT, mime TEXT NOT NULL, content BLOB NOT NULL,
+          size INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )`);
     /* Migration douce : les anciennes bases ont des créneaux hebdomadaires sans date.
        On ajoute la date réelle sans effacer ni réécrire ces données historiques. */
     try {
@@ -60,6 +74,23 @@ export function ensureBootstrap() {
       const n = await ensureAnnonces();
       if (n) console.log(`[start] ${n} annonce(s) de démonstration publiée(s).`);
     } catch (e) { console.error('[start] annonces de démonstration échouées :', e.message); }
+    /* Les anciennes annonces épinglées n'avaient pas encore de pièce jointe. On
+       transforme seulement cette donnée historique en pièce jointe BDD une fois ;
+       les nouvelles publications utilisent toujours leur fichier envoyé par l'admin. */
+    try {
+      if (fs.existsSync(ANNOUNCEMENT_IMAGE)) {
+        const legacy = await db.prepare(`SELECT a.id FROM announcements a
+          LEFT JOIN announcement_images ai ON ai.announcement_id = a.id
+          WHERE a.pinned=1 AND ai.announcement_id IS NULL`).all();
+        if (legacy.length) {
+          const image = fs.readFileSync(ANNOUNCEMENT_IMAGE);
+          const add = db.prepare(`INSERT INTO announcement_images
+            (announcement_id, file_name, mime, content, size) VALUES (?,?,?,?,?)
+            ON CONFLICT(announcement_id) DO NOTHING`);
+          for (const a of legacy) await add.run(a.id, 'annonce-epinglee.jpg', 'image/jpeg', image, image.length);
+        }
+      }
+    } catch (e) { console.error('[start] pièce jointe annonce :', e.message); }
     try {
       const { ensureSchedule } = await import('./schedule.js');
       const made = await ensureSchedule();

@@ -62,23 +62,31 @@ const ICONS = {
 };
 
 /** Page complète. ctx : { t, th, title, active?, admin?, wide?, flash?, error? } */
-export function page(ctx, { title = 'MonRelevé', body = '', tabs = null, adminTab = null, bare = false } = {}) {
+export function page(ctx, { title = 'MonRelevé', body = '', tabs = null, adminTab = null, bare = false, minimal = false, bodyClass = '' } = {}) {
   const th = ctx.th;
   const themeAttr = th === 'dark' || th === 'light' ? ` data-theme="${th}"` : '';
   const toggleHref = url(ctx.pathname || '/', { th: th === 'dark' ? 'light' : 'dark' });
-  const logoutHref = url('/deconnexion', { th });
+  const themeLabel = th === 'dark' ? 'Passer au mode clair' : 'Passer au mode sombre';
+  const themeIcon = th === 'dark'
+    ? '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>'
+    : '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>';
   const isStudentHome = Boolean(ctx.user && !bare && !adminTab && (ctx.pathname || '') === '/accueil');
-  const topbarUserIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="7.5" r="4.5"/><path d="M3.2 20.4c.7-4.2 4-6.8 8.8-6.8s8.1 2.6 8.8 6.8c.1.6-.4 1.1-1 1.1H4.2c-.6 0-1.1-.5-1-1.1Z"/></svg>';
-  const topbar = `<header class="topbar${bare ? ' topbar-auth' : ''}${isStudentHome ? ' topbar-home' : ' topbar-page'}">
+  const isProfilePage = Boolean(ctx.user && !bare && (ctx.pathname || '') === '/profil');
+  const profileBackHref = url(ctx.user?.role === 'admin' ? '/admin' : '/accueil', { th });
+  const topbarUserIcon = '<svg viewBox="49 58 22 29" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="M60.1506 75.063C54.6725 75.063 49.8677 78.2858 49.8677 81.958C49.8677 86.683 57.6082 86.683 60.1506 86.683C62.693 86.683 70.4322 86.683 70.4322 81.9272C70.4322 78.2704 65.6274 75.063 60.1506 75.063Z"/><path fill-rule="evenodd" clip-rule="evenodd" d="M60.0968 71.9992H60.1402C63.9132 71.9992 66.982 68.9304 66.982 65.1574C66.982 61.3858 63.9132 58.317 60.1402 58.317C56.3673 58.317 53.2985 61.3858 53.2985 65.1546C53.2859 68.915 56.3337 71.9852 60.0968 71.9992Z"/></svg>';
+  const topbarAvatar = ctx.user?.has_profile_photo
+    ? '<img class="topbar-avatar-photo" src="/profil/photo" alt="" />'
+    : topbarUserIcon;
+  const topbarName = `<span class="topbar-copy">${isStudentHome ? '<b class="topbar-greeting">Bonjour</b>' : ''}<b class="topbar-name">${esc(ctx.user?.first_name || ctx.user?.last_name || 'Profil')}</b></span>`;
+  const topbar = minimal ? '' : `<header class="topbar${bare ? ' topbar-auth' : ''}${isStudentHome ? ' topbar-home' : ' topbar-page'}${isProfilePage ? ' topbar-profile' : ''}">
       ${ctx.user ? `<div class="topbar-user">
-        <a class="topbar-identity" href="${url(ctx.user.role === 'admin' ? '/admin' : '/profil', { th })}" title="Mon profil" aria-label="Mon profil">
-          <span class="topbar-avatar">${topbarUserIcon}</span>
-          <span class="topbar-copy">${isStudentHome ? '<b class="topbar-greeting">Bonjour</b>' : ''}<b class="topbar-name">${esc(ctx.user.first_name || ctx.user.last_name || 'Profil')}</b></span>
-        </a>
+        ${isProfilePage
+          ? `<a class="topbar-back" href="${profileBackHref}" title="Retour" aria-label="Retour"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg></a><span class="topbar-identity topbar-identity-static">${topbarName}</span>`
+          : `<a class="topbar-identity" href="${url('/profil', { th })}" title="Mon profil" aria-label="Mon profil"><span class="topbar-avatar${ctx.user.has_profile_photo ? ' topbar-avatar-photo-wrap' : ''}">${topbarAvatar}</span>${topbarName}</a>`}
       </div>` : '<div class="brand guest"><span class="logo-dot">MR</span> MonRelevé</div>'}
-      <div class="topbar-tools">
-        ${bare ? '' : `<a class="icon-btn" href="${toggleHref}" title="Thème clair / sombre" aria-label="Thème clair / sombre" style="text-decoration:none">${th === 'dark' ? '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>' : '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>'}</a>${ctx.user ? `<a class="icon-btn" href="${logoutHref}" title="Se déconnecter" aria-label="Se déconnecter" style="text-decoration:none"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="M10 17l5-5-5-5"/><path d="M15 12H3"/></svg></a>` : ''}`}
-      </div>
+      ${ctx.user && !bare ? `<div class="topbar-tools">
+        <a class="icon-btn topbar-theme" href="${toggleHref}" title="${themeLabel}" aria-label="${themeLabel}" style="text-decoration:none">${themeIcon}</a>
+      </div>` : ''}
     </header>`;
 
   /* Barre étudiante inspirée de Frame-109 : quatre onglets autour d'un bouton central fixe
@@ -87,7 +95,7 @@ export function page(ctx, { title = 'MonRelevé', body = '', tabs = null, adminT
   const PILL_OF = { home: 'home', pencil: 'pencil', send: 'send', list: 'chart', chart: 'chart', calendar: 'calendar' };
   const actKey = tabs ? tabsActive(ctx, tabs) : null;
   const actIdx = tabs ? Math.max(0, tabs.findIndex(([, , , key]) => key === actKey)) : 0;
-  const studentNav = tabs ? `<nav class="tabbar" aria-label="Navigation principale" data-active="${actIdx}">
+  const studentNav = !minimal && tabs ? `<nav class="tabbar" aria-label="Navigation principale" data-active="${actIdx}">
     <span class="tab-disc" aria-hidden="true"></span>
     <span class="tab-send-disc" aria-hidden="true"></span>
     ${tabs.map(([href, ico, label, key], i) => {
@@ -132,13 +140,16 @@ export function page(ctx, { title = 'MonRelevé', body = '', tabs = null, adminT
   })();
   </script>` : '';
 
-  const adminNav = adminTab ? `<nav style="position:sticky;top:55px;z-index:25;background:color-mix(in srgb, var(--card) 92%, transparent);backdrop-filter:blur(10px);border-bottom:0;padding:8px 12px;display:flex;gap:6px;overflow-x:auto">
+  const adminNav = !minimal && adminTab ? `<nav class="admin-nav" aria-label="Navigation administration">
       ${[['/accueil', 'Annonces'], ['/admin', 'Tableau de bord'], ['/admin/etudiants', 'Étudiants'], ['/admin/modeles', 'Modèles'], ['/admin/import', 'Import Excel'], ['/admin/referentiels', 'Référentiels'], ['/admin/emploi', 'Calendrier'], ['/admin/messages', 'Messages']]
-        .map(([p, l]) => `<a href="${url(p, { t: ctx.t, th })}" class="chip ${p === adminTab ? 'violet' : 'gray'}" style="text-decoration:none;flex:none;font-size:12.5px;padding:6px 12px">${l}</a>`).join('')}
+        .map(([p, l]) => `<a href="${url(p, { t: ctx.t, th })}" class="chip ${p === adminTab ? 'violet' : 'gray'}">${l}</a>`).join('')}
     </nav>` : '';
 
   const flash = ctx.flash ? `<div class="banner ok" style="margin:10px 14px 0">${ctx.flash}</div>` : '';
   const err = ctx.error ? `<div class="banner bad" style="margin:10px 14px 0">${ctx.error}</div>` : '';
+  const routeKey = String(ctx.pathname || '/').replace(/^\/+|\/+$/g, '').replace(/[^a-z0-9]+/gi, '-') || 'root';
+  const referencePage = ctx.pathname === '/accueil' || /^\/accueil\/annonces\//.test(ctx.pathname || '');
+  const layoutBodyClass = [bodyClass, ctx.user ? `role-${ctx.user.role}` : 'guest-page', referencePage ? 'reference-page' : 'interior-page', `route-${routeKey}`].filter(Boolean).join(' ');
 
   return `<!doctype html>
 <html lang="fr"${themeAttr}>
@@ -161,7 +172,7 @@ export function page(ctx, { title = 'MonRelevé', body = '', tabs = null, adminT
   .warn-line { color:var(--warn); font-size:12px } .ok-line { color:var(--ok); font-size:12px }
 </style>
 </head>
-<body>
+<body class="${esc(layoutBodyClass)}">
 ${topbar}${adminNav}
 <main class="${adminTab ? 'wide ' : ''}fade">${flash}${err}${body}</main>
 ${studentNav}

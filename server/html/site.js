@@ -6,6 +6,7 @@
  * L'API REST JSON (/api/*) reste en place (mobile/PWA) et partage la même base.
  */
 import express from 'express';
+import PDFDocument from 'pdfkit';
 import { asyncRouter } from '../asyncrouter.js';
 import multer from 'multer';
 import db, { tx } from '../db.js';
@@ -16,7 +17,7 @@ import { loadSheetCells, loadSheetValues, parseReleveStructure, parseFlatGrades,
 import { page, esc, fmt, url, hiddenT, chip, statusChip, pubChip } from './layout.js';
 import { liveCalcScript } from './engine.js';
 import { buildRelevePdf } from '../pdfReleve.js';
-import { feed, likedIds, toggleLike, audienceLabel, relTime, initialsOf } from '../annonces.js';
+import { feed, likedIds, toggleLike, audienceLabel, relTime } from '../annonces.js';
 import { saveUpload, readUpload, dropUpload, TAILLE_MAX } from '../uploads.js';
 import { resolveAcademicClass } from '../academic.js';
 
@@ -43,6 +44,24 @@ const upload = multer({
   fileFilter: (_q, f, cb) => {
     const ok = /\.(xlsx|xls)$/i.test(f.originalname);
     cb(ok ? null : new ApiError(400, 'Format attendu : .xlsx ou .xls'), ok);
+  },
+});
+const ANNOUNCEMENT_IMAGE_MAX = Number(process.env.ANNOUNCEMENT_IMAGE_MAX_MB || 8) * 1024 * 1024;
+const announcementUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: ANNOUNCEMENT_IMAGE_MAX },
+  fileFilter: (_q, f, cb) => {
+    const ok = /\.(jpe?g|png|webp)$/i.test(f.originalname) && /^image\/(jpeg|png|webp)$/i.test(f.mimetype || '');
+    cb(ok ? null : new ApiError(400, 'Image attendue : .jpg, .png ou .webp'), ok);
+  },
+});
+const PROFILE_IMAGE_MAX = Number(process.env.PROFILE_IMAGE_MAX_MB || 5) * 1024 * 1024;
+const profileUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: PROFILE_IMAGE_MAX },
+  fileFilter: (_q, f, cb) => {
+    const ok = /\.(jpe?g|png|webp)$/i.test(f.originalname) && /^image\/(jpeg|png|webp)$/i.test(f.mimetype || '');
+    cb(ok ? null : new ApiError(400, 'Photo attendue : .jpg, .png ou .webp'), ok);
   },
 });
 
@@ -72,12 +91,14 @@ r.use(async (req, res, next) => {
   const q = req.query;
   const token = getCookie(req, 'mrt');
   const user = await readToken(token);
+  const profilePhoto = user ? await db.prepare('SELECT id FROM profile_photos WHERE user_id=?').get(user.id) : null;
+  const viewUser = user ? { ...user, has_profile_photo: Boolean(profilePhoto) } : null;
   /* le choix de thème est persisté en cookie : les liens sans ?th= le conservent */
   if (q.th === 'dark' || q.th === 'light') res.setHeader('Set-Cookie', `mrt_theme=${q.th}; Path=/; Max-Age=31536000; SameSite=Lax`);
   else if (q.th === 'auto') res.setHeader('Set-Cookie', 'mrt_theme=; Path=/; Max-Age=0; SameSite=Lax');
-  const ctx = { t: null, th: ['dark', 'light'].includes(q.th) ? String(q.th) : getCookie(req, 'mrt_theme'), pathname: req.path.replace(/\/$/, '') || '/', user, flash: q.ok ? esc(q.ok) : null, error: q.err ? esc(q.err) : null };
+  const ctx = { t: null, th: ['dark', 'light'].includes(q.th) ? String(q.th) : getCookie(req, 'mrt_theme'), pathname: req.path.replace(/\/$/, '') || '/', user: viewUser, flash: q.ok ? esc(q.ok) : null, error: q.err ? esc(q.err) : null };
   req.ctx = ctx;
-  req.user = user;
+  req.user = viewUser;
   next();
 });
 const need = (role) => (req, res, next) => {
@@ -284,23 +305,33 @@ const STU_TABS = [
   ['/accueil', 'home', 'Accueil', '/accueil'],
   ['/saisie', 'pencil', 'Saisie', '/saisie'],
   ['/messages', 'send', 'Envoyer un message à l’administration', '/messages'],
-  ['/releve', 'list', 'Relevé', '/releve'],
+  ['/archives', 'list', 'Archives', '/archives'],
   ['/calendrier', 'calendar', 'Calendrier', '/calendrier'],
 ];
-const stuPage = (req, title, body) => page(req.ctx, { title, body, tabs: STU_TABS });
+const stuPage = (req, title, body, opts = {}) => page(req.ctx, { title, body, tabs: STU_TABS, ...opts });
 
 /* ------------------------------------------------------------------ */
 /* Accueil = fil d'annonces (« publications ») de l'administration        */
 /* ------------------------------------------------------------------ */
-const CIBLE_TXT = { all: 'Tous les étudiants', program: 'Une filière' };
+/** Icône pleine utilisée par les cartes d'annonces, comme dans la maquette mobile. */
+const ANNOUNCEMENT_USER_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="7.5" r="4.5"/><path d="M3.2 20.4c.7-4.2 4-6.8 8.8-6.8s8.1 2.6 8.8 6.8c.1.6-.4 1.1-1 1.1H4.2c-.6 0-1.1-.5-1-1.1Z"/></svg>';
 
-/** Carte d'une annonce : avatar, auteur, date relative, cible, texte, « J'aime », modération admin. */
-async function annonceCard(a, { ctx, liked = false, mine = false, admin = false }) {
+/** Carte d'une annonce : une vraie ligne BDD, ouvrable vers son détail. */
+async function annonceCard(a, { ctx, liked = false, admin = false, featured = false }) {
   const estAdmin = a.author_role === 'admin';
-  const who = estAdmin ? 'Administration' : `${a.first_name || ''} ${a.last_name || ''}`.trim() || 'MonRelevé';
-  const sub = [relTime(a.created_at), estAdmin ? 'annonce officielle' : 'étudiant'].filter(Boolean).join(' · ');
-  const ini = estAdmin ? 'AD' : initialsOf(a.first_name, a.last_name);
+  const who = `${a.first_name || ''} ${a.last_name || ''}`.trim() || (estAdmin ? 'Administration' : 'MonRelevé');
+  const sub = relTime(a.created_at);
   const body = esc(a.body).replace(/\n{2,}/g, '</p><p>').replace(/\n/g, '<br/>');
+  const href = url(`/accueil/annonces/${a.id}`, ctx);
+  const imageUrl = a.has_image ? url(`/accueil/annonces/${a.id}/image`, ctx) : '';
+  const imageStyle = imageUrl ? ` style="background-image:url('${esc(imageUrl)}')"` : '';
+  const inlineImage = !featured && imageUrl
+    ? `<div class="post-image-wrap"><img class="post-image" src="${esc(imageUrl)}" alt="Photo de la publication de ${esc(who)}" loading="lazy" decoding="async"/></div>`
+    : '';
+  const authorPhoto = a.author_has_photo && a.author_id
+    ? `<img class="announcement-author-photo" src="${esc(url(`/profil/photo/${a.author_id}`, ctx))}" alt="" />`
+    : ANNOUNCEMENT_USER_ICON;
+  const author = `<span class="home-avatar" title="${esc(who)}">${authorPhoto}</span><span class="who"><b>${esc(who)}</b><span class="tiny muted">${esc(sub)}</span></span>`;
   const likeBtn = `<form method="post" action="${url(`/accueil/annonces/${a.id}/aime`, ctx)}" style="margin:0">
       <input type="hidden" name="th" value="${esc(ctx.th || '')}" />
       <button class="likebtn${liked ? ' on' : ''}" type="submit" aria-pressed="${liked}">
@@ -309,13 +340,22 @@ async function annonceCard(a, { ctx, liked = false, mine = false, admin = false 
       </button></form>`;
   const mod = admin ? `<form method="post" action="${url(`/accueil/annonces/${a.id}/epingler`, ctx)}" style="margin:0"><input type="hidden" name="th" value="${esc(ctx.th || '')}" /><button class="chip gray" type="submit" style="cursor:pointer">${a.pinned ? 'Désépingler' : 'Épingler'}</button></form>
       <form method="post" action="${url(`/accueil/annonces/${a.id}/supprimer`, ctx)}" style="margin:0" onsubmit="return confirm('Supprimer cette annonce ?')"><input type="hidden" name="th" value="${esc(ctx.th || '')}" /><button class="chip bad" type="submit" style="cursor:pointer">Supprimer</button></form>` : '';
+  if (featured) return `<article class="post post-featured${a.pinned ? ' pinned' : ''}">
+    <a class="post-featured-open" href="${href}" aria-label="Ouvrir l’annonce">
+      <div class="post-featured-image${a.has_image ? ' has-image' : ' no-image'}"${imageStyle}>
+        <div class="post-featured-overlay">
+          <p>${body}</p>
+          <div class="post-featured-meta"><span class="home-avatar">${authorPhoto}</span><b>${esc(who)}</b><span>${esc(relTime(a.created_at))}</span></div>
+        </div>
+      </div>
+    </a>
+  </article>`;
   return `<article class="post${a.pinned ? ' pinned' : ''}">
-    <header class="post-head">
-      <span class="avatar" title="Administration">${esc(ini)}</span>
-      <div class="who"><b>${esc(who)}</b><span class="tiny muted">${esc(sub)}</span></div>
-      <span class="chip gray" title="Destinataires">${esc(await audienceLabel(a))}</span>
-    </header>
-    <div class="post-body"><p>${body}</p></div>
+    <a class="post-main" href="${href}" aria-label="Ouvrir l’annonce">
+      <header class="post-head">${author}${admin ? `<span class="chip gray" title="Destinataires">${esc(await audienceLabel(a))}</span>` : ''}</header>
+      <div class="post-body"><p>${body}</p></div>
+      ${inlineImage}
+    </a>
     <footer class="post-foot">${likeBtn}${a.pinned ? chip('Épinglée', 'violet') : ''}${mod}</footer>
   </article>`;
 }
@@ -325,7 +365,7 @@ async function composer(req) {
   const o = await opts();
   const prog = o.programs.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
   const h = hiddenT(req.ctx.t, { th: req.ctx.th });
-  return `<form class="composer" method="post" action="${url('/accueil/annonces', req.ctx)}">${h}
+  return `<form class="composer" method="post" action="${url('/accueil/annonces', req.ctx)}" enctype="multipart/form-data">${h}
     <textarea class="input" name="body" rows="3" maxlength="2000" placeholder="Quoi de neuf ? Écrivez une annonce pour les étudiants…" required></textarea>
     <div class="composer-row">
       <select class="input" name="audience" id="ann-audience" onchange="document.getElementById('ann-prog').hidden = this.value !== 'program';">
@@ -333,6 +373,7 @@ async function composer(req) {
         <option value="program">Une filière</option>
       </select>
       <select class="input" name="program_id" id="ann-prog" hidden>${prog}</select>
+      <label class="tiny muted ann-image-field">Photo (facultative, obligatoire si épinglée) <input type="file" name="image" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" /></label>
       <label class="tiny muted" style="display:flex;align-items:center;gap:6px"><input type="checkbox" name="pinned" value="1" /> Épingler en haut</label>
       <button class="btn sm" style="width:auto">Publier</button>
     </div>
@@ -349,32 +390,122 @@ r.get('/accueil', (req, res, next) => {
   const viewer = admin ? req.user : stud;
   const posts = await feed(viewer);
   const liked = await likedIds(req.user.id, posts.map((p) => p.id));
-  const cards = (await Promise.all(posts.map(async (a) => await annonceCard(a, { ctx: req.ctx, liked: liked.has(a.id), admin })))).join('');
-  const body = `<h1 style="font-size:18px;margin:4px 2px 12px">Annonces</h1>
+  const pinnedWithImages = admin ? [] : posts.filter((a) => a.pinned && a.has_image);
+  const carouselSlides = await Promise.all(pinnedWithImages.map((a) => annonceCard(a, {
+    ctx: req.ctx, liked: liked.has(a.id), admin: false, featured: true,
+  })));
+  const carouselDots = pinnedWithImages.map((a, i) => `<button type="button" class="announcement-carousel-dot${i === 0 ? ' on' : ''}" data-carousel-to="${i}" aria-label="Annonce épinglée ${i + 1}"${i === 0 ? ' aria-current="true"' : ''}></button>`).join('');
+  const carousel = carouselSlides.length ? `<section class="announcement-carousel" data-announcement-carousel data-count="${carouselSlides.length}" aria-label="Annonces épinglées">
+      <div class="announcement-carousel-track">${carouselSlides.join('')}</div>
+      <div class="announcement-carousel-dots" role="tablist">${carouselDots}</div>
+    </section>
+    <script>
+      (function () {
+        var root = document.querySelector('[data-announcement-carousel]');
+        if (!root) return;
+        var track = root.querySelector('.announcement-carousel-track');
+        var dots = Array.prototype.slice.call(root.querySelectorAll('[data-carousel-to]'));
+        var count = dots.length, index = 0, timer = null;
+        function go(next) {
+          index = (next + count) % count;
+          track.style.transform = 'translate3d(-' + (index * 100) + '%,0,0)';
+          dots.forEach(function (dot, i) { dot.classList.toggle('on', i === index); dot.setAttribute('aria-current', i === index ? 'true' : 'false'); });
+        }
+        function stop() { if (timer) { clearInterval(timer); timer = null; } }
+        function start() { stop(); if (count > 1) timer = setInterval(function () { go(index + 1); }, 3000); }
+        dots.forEach(function (dot) { dot.addEventListener('click', function () { go(Number(dot.dataset.carouselTo)); start(); }); });
+        root.addEventListener('mouseenter', stop); root.addEventListener('mouseleave', start);
+        root.addEventListener('focusin', stop); root.addEventListener('focusout', start);
+        start();
+      }());
+    </script>` : '';
+  const remaining = posts.filter((a) => !pinnedWithImages.some((p) => p.id === a.id));
+  const cards = (await Promise.all(remaining.map(async (a) => await annonceCard(a, {
+    ctx: req.ctx, liked: liked.has(a.id), admin,
+  })))).join('');
+  const body = `${admin ? '<h1 style="font-size:18px;margin:4px 2px 12px">Annonces</h1>' : ''}
     ${req.ctx.flash ? `<div class="banner ok">${req.ctx.flash}</div>` : ''}
     ${req.ctx.error ? `<div class="banner warn">${req.ctx.error}</div>` : ''}
     ${admin ? await composer(req) : ''}
-    <div class="feed">${cards || '<div class="empty">Aucune annonce pour le moment.</div>'}</div>
+    <div class="feed">${carousel}${cards || (!carousel ? '<div class="empty">Aucune annonce pour le moment.</div>' : '')}</div>
     ${admin ? `<p class="tiny muted" style="margin:14px 2px">Vous publiez en tant qu’administration — les annonces ciblées n’apparaissent qu’aux étudiants concernés.</p>`
-            : `<p class="tiny muted" style="margin:14px 2px">Fil d’annonces de l’administration · <a class="link-btn" href="${url('/releve', req.ctx)}">voir mon relevé</a></p>`}`;
+            : ''}`;
   res.send(admin
     ? page(req.ctx, { title: 'Annonces', body, adminTab: '/accueil' })
-    : stuPage(req, 'Annonces', body));
+    : stuPage(req, 'Annonces', body, { bodyClass: 'student-home-page' }));
 }));
 
-/* Publication d'une annonce (administration). */
-r.post('/accueil/annonces', need('admin'), H(async (req, res) => {
+/* Image jointe : elle est lue depuis la BDD et protégée par la même visibilité que l'annonce. */
+r.get('/accueil/annonces/:id/image', H(async (req, res) => {
+  if (!req.user) return res.status(404).end();
+  const viewer = req.user.role === 'admin' ? req.user : await student(req);
+  const visible = await feed(viewer, { limit: 100 });
+  if (!visible.some((a) => String(a.id) === String(req.params.id))) return res.status(404).end();
+  const image = await db.prepare('SELECT mime, content FROM announcement_images WHERE announcement_id=?').get(Number(req.params.id));
+  if (!image?.content) return res.status(404).end();
+  const content = Buffer.isBuffer(image.content) ? image.content : Buffer.from(image.content);
+  res.setHeader('Content-Type', image.mime || 'application/octet-stream');
+  res.setHeader('Content-Length', content.length);
+  res.setHeader('Cache-Control', 'private, max-age=300');
+  res.end(content);
+}));
+
+/* Détail d'une annonce : vue immersive ouverte par un appui sur la carte. */
+r.get('/accueil/annonces/:id', (req, res, next) => {
+  if (!req.user) { res.redirect(303, '/login?err=' + encodeURIComponent('Session requise — connectez-vous.')); return; }
+  next();
+}, H(async (req, res) => {
+  const viewer = req.user.role === 'admin' ? req.user : await student(req);
+  const visible = await feed(viewer, { limit: 100 });
+  const annonce = visible.find((a) => String(a.id) === String(req.params.id));
+  if (!annonce) throw notFound('Annonce introuvable');
+  const liked = (await likedIds(req.user.id, [annonce.id])).has(annonce.id);
+  const who = `${annonce.first_name || ''} ${annonce.last_name || ''}`.trim() || (annonce.author_role === 'admin' ? 'Administration' : 'MonRelevé');
+  const authorPhoto = annonce.author_has_photo && annonce.author_id
+    ? `<img class="announcement-author-photo" src="${esc(url(`/profil/photo/${annonce.author_id}`, req.ctx))}" alt="" />`
+    : ANNOUNCEMENT_USER_ICON;
+  const content = esc(annonce.body).replace(/\n{2,}/g, '</p><p>').replace(/\n/g, '<br/>');
+  const detailImage = annonce.has_image ? url(`/accueil/annonces/${annonce.id}/image`, req.ctx) : '';
+  const detailImageStyle = detailImage ? ` style="background-image:url('${esc(detailImage)}')"` : '';
+  const like = `<form method="post" action="${url(`/accueil/annonces/${annonce.id}/aime`, req.ctx)}" class="detail-like">
+    <input type="hidden" name="th" value="${esc(req.ctx.th || '')}"/>
+    <button class="likebtn${liked ? ' on' : ''}" type="submit" aria-pressed="${liked}"><svg viewBox="0 0 24 24" width="17" height="17" fill="${liked ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20.3 4.6 13a4.6 4.6 0 0 1 6.5-6.5l.9.9.9-.9A4.6 4.6 0 1 1 19.4 13Z"/></svg><span>J’aime</span>${annonce.likes ? `<b>${annonce.likes}</b>` : ''}</button>
+  </form>`;
+  const body = `<article class="announcement-detail">
+    <div class="announcement-detail-media${annonce.has_image ? ' has-image' : ' no-image'}"${detailImageStyle}>
+      <a class="announcement-back" href="${url('/accueil', req.ctx)}" aria-label="Retour aux annonces" title="Retour aux annonces"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg></a>
+    </div>
+    <section class="announcement-detail-sheet">
+      <header class="announcement-detail-author"><span class="home-avatar">${authorPhoto}</span><div><b>${esc(who)}</b><span>${esc(relTime(annonce.created_at))}</span></div></header>
+      <div class="announcement-detail-copy"><p>${content}</p></div>
+      ${like}
+    </section>
+  </article>`;
+  res.send(page(req.ctx, { title: 'Annonce', body, minimal: true, bodyClass: 'announcement-detail-page' }));
+}));
+
+/* Publication d'une annonce (administration). La pièce jointe est persistée dans la BDD. */
+r.post('/accueil/annonces', need('admin'), announcementUpload.single('image'), H(async (req, res) => {
   const fail = (m) => res.redirect(303, url('/accueil', { ...req.ctx, err: m }));
   const text = String(req.body.body || '').trim();
   if (!text) return fail('Annonce vide : écrivez un texte.');
   const audience = ['all', 'program'].includes(req.body.audience) ? req.body.audience : 'all';
+  const pinned = req.body.pinned ? 1 : 0;
+  if (pinned && !req.file) return fail('Une publication épinglée doit avoir une image jointe.');
   let programId = null;
   if (audience === 'program') {
     programId = asNum(req.body.program_id);
     if (!programId || !await db.prepare('SELECT id FROM programs WHERE id=?').get(programId)) return fail('Choisissez une filière valide.');
   }
-  await db.prepare('INSERT INTO announcements (author_id, body, audience, program_id, class_id, pinned) VALUES (?,?,?,?,?,?)')
-    .run(req.user.id, text.slice(0, 2000), audience, programId, null, req.body.pinned ? 1 : 0);
+  await tx(async () => {
+    const inserted = await db.prepare('INSERT INTO announcements (author_id, body, audience, program_id, class_id, pinned) VALUES (?,?,?,?,?,?)')
+      .run(req.user.id, text.slice(0, 2000), audience, programId, null, pinned);
+    if (req.file) {
+      await db.prepare(`INSERT INTO announcement_images
+        (announcement_id, file_name, mime, content, size) VALUES (?,?,?,?,?)`)
+        .run(inserted.lastInsertRowid, String(req.file.originalname || 'annonce-image').slice(0, 200), req.file.mimetype, req.file.buffer, req.file.size);
+    }
+  });
   res.redirect(303, url('/accueil', { ...req.ctx, ok: 'Annonce publiée.' }));
 }));
 
@@ -392,8 +523,14 @@ r.post('/accueil/annonces/:id/aime', (req, res, next) => {
 /* Modération : épingler / désépingler. */
 r.post('/accueil/annonces/:id/epingler', need('admin'), H(async (req, res) => {
   const id = Number(req.params.id);
-  const a = await db.prepare('SELECT pinned FROM announcements WHERE id=?').get(id);
+  const a = await db.prepare(`SELECT pinned,
+    CASE WHEN ai.announcement_id IS NULL THEN 0 ELSE 1 END AS has_image
+    FROM announcements a LEFT JOIN announcement_images ai ON ai.announcement_id=a.id WHERE a.id=?`).get(id);
   if (!a) throw notFound('Annonce introuvable');
+  if (!a.pinned && !a.has_image) {
+    res.redirect(303, url('/accueil', { ...req.ctx, err: 'Ajoutez une image avant d’épingler cette publication.' }));
+    return;
+  }
   await db.prepare('UPDATE announcements SET pinned=? WHERE id=?').run(a.pinned ? 0 : 1, id);
   res.redirect(303, url('/accueil', { ...req.ctx, ok: a.pinned ? 'Annonce désépinglée.' : 'Annonce épinglée.' }));
 }));
@@ -432,7 +569,11 @@ r.get('/saisie', need('student'), H(async (req, res) => {
         <tbody>${rows}</tbody></table>
         <div style="margin-top:10px"><button class="btn">Enregistrer le semestre</button></div>
       </form>
-    </div>` + liveCalcScript({ rules: d.personal.rules, tree: liveTree(d.semesters), source: liveScores(d.personal) });
+    </div>` + liveCalcScript({ rules: d.personal.rules, tree: liveTree(d.semesters), source: liveScores(d.personal) }) +
+    `<section class="saisie-releve-fusion" aria-labelledby="releve-fusion-title">
+      <div class="section-title" style="margin-top:28px"><h2 id="releve-fusion-title" style="font-size:18px;margin:0">Relevé complet</h2><span class="tiny muted">Notes personnelles, résultats officiels, synthèses et exports</span></div>
+      ${renderReleveSection(req, d, { basePath: '/saisie' })}
+    </section>`;
   res.send(stuPage(req, 'Saisie', body));
 }));
 
@@ -460,22 +601,24 @@ const releveTable = (sem, { editable = false, locked = false } = {}) => `
   </tbody></table></div>`;
 
 /* ------------------------------------------------------------------ */
-/* Relevé : la page complète — résumé, statistiques, relevés, progression */
-/* (tout ce qui était résumé sur l'accueil est ici, cf. demande : une seule vue « Relevé ») */
+/* Relevé fusionné dans Saisie                                          */
 /* ------------------------------------------------------------------ */
-r.get('/releve', need('student'), H(async (req, res) => {
-  const stud = await student(req);
-  const d = await studentData(stud);
-  if (!d.template) return res.redirect(303, url('/accueil', { ...req.ctx, err: 'Aucun modèle disponible.' }));
+/**
+ * Rend le bloc complet qui se trouvait auparavant sur /releve.
+ * Il reste volontairement unique : /saisie l'affiche sous le formulaire et
+ * conserve donc les mêmes calculs, sélecteurs, tableaux et exports.
+ */
+const renderReleveSection = (req, d, { basePath = '/saisie' } = {}) => {
   const src = req.query.source === 'official' ? 'official' : 'personal';
   const sems = src === 'official' ? d.officialVisible : d.personal.semesters;
   const tot = src === 'official' ? d.official : d.personal;
-  const autre = src === 'official' ? d.personal : d.official;      /* l'autre source, en rappel */
+  const autre = src === 'official' ? d.personal : d.official;
   const pct = tot.creditsExpected ? Math.min(100, Math.round((tot.creditsEarned / tot.creditsExpected) * 100)) : 0;
+  const switchBase = { ...req.ctx, sem: req.query.sem || undefined };
 
   const segments = `<div class="segments" style="width:auto">
-      <a class="${src === 'personal' ? 'on' : ''}" href="${url('/releve', { ...req.ctx, source: 'personal' })}" style="text-decoration:none;color:inherit"><button type="button" class="btn mini" style="${src === 'personal' ? '' : 'background:transparent;color:var(--muted);box-shadow:none'}">Mes notes</button></a>
-      <a class="${src === 'official' ? 'on' : ''}" href="${url('/releve', { ...req.ctx, source: 'official' })}" style="text-decoration:none;color:inherit"><button type="button" class="btn mini" style="${src === 'official' ? '' : 'background:transparent;color:var(--muted);box-shadow:none'}">Officiel</button></a>
+      <a class="${src === 'personal' ? 'on' : ''}" href="${url(basePath, { ...switchBase, source: 'personal' })}" style="text-decoration:none;color:inherit"><button type="button" class="btn mini" style="${src === 'personal' ? '' : 'background:transparent;color:var(--muted);box-shadow:none'}">Mes notes</button></a>
+      <a class="${src === 'official' ? 'on' : ''}" href="${url(basePath, { ...switchBase, source: 'official' })}" style="text-decoration:none;color:inherit"><button type="button" class="btn mini" style="${src === 'official' ? '' : 'background:transparent;color:var(--muted);box-shadow:none'}">Officiel</button></a>
     </div>`;
 
   const resume = `<div class="hero">
@@ -494,13 +637,14 @@ r.get('/releve', need('student'), H(async (req, res) => {
     </div>`;
 
   const actions = `<div class="row" style="gap:8px;margin:14px 2px;flex-wrap:wrap">
-      <a class="btn sm" style="width:auto;flex:1;text-decoration:none;text-align:center" href="${url('/saisie', req.ctx)}">Saisir mes notes</a>
+      <a class="btn sm" style="width:auto;flex:1;text-decoration:none;text-align:center" href="${url('/saisie', { ...req.ctx, sem: req.query.sem || undefined })}">Saisir mes notes</a>
       <a class="btn sm ghost" style="width:auto;flex:1;text-decoration:none;text-align:center" href="${url('/mon-releve.pdf', { ...req.ctx, source: src })}">Exporter en PDF — une page</a>
+      <a class="btn sm ghost" style="width:auto;flex:1;text-decoration:none;text-align:center" href="${url('/mon-releve.xlsx', { ...req.ctx, source: src })}">Exporter en Excel</a>
     </div>`;
 
   const tables = sems.map((s) => `<div class="sem-title"><h2>S${s.number} — ${esc(s.name)}</h2>
       <span class="row" style="gap:8px;align-items:center">${pubChip((d.pubs[s.id] || {}).status || 'draft')}
-      <a class="link-btn" href="${url('/saisie', { ...req.ctx, sem: s.id })}">Saisir</a></span></div>${releveTable(s)}`).join('');
+      <a class="link-btn" href="${url('/saisie', { ...req.ctx, sem: s.id, source: src })}">Saisir</a></span></div>${releveTable(s)}`).join('');
 
   const progres = sems.length ? `<div class="card" style="margin-top:14px;text-align:center">
       <div class="tiny muted">Moyenne générale (${src === 'official' ? 'officiel' : 'mes notes'})</div>
@@ -513,23 +657,141 @@ r.get('/releve', need('student'), H(async (req, res) => {
       <div class="stat ${tot.creditsRemaining > 0 ? 'warn' : 'ok'}"><div class="v">${fmt(tot.creditsRemaining, 0)}</div><div class="k">Crédits restants</div></div>
     </div>
     <div class="stack" style="margin-top:10px">${sems.map((s) => `<div class="card">
-      <div class="row spread"><b>S${s.number} — ${esc(s.name)}</b><span class="row" style="gap:10px;align-items:center"><span>${fmt(s.average)}/20</span><a class="link-btn tiny" href="${url('/saisie', { ...req.ctx, sem: s.id })}">Saisir</a></span></div>
+      <div class="row spread"><b>S${s.number} — ${esc(s.name)}</b><span class="row" style="gap:10px;align-items:center"><span>${fmt(s.average)}/20</span><a class="link-btn tiny" href="${url('/saisie', { ...req.ctx, sem: s.id, source: src })}">Saisir</a></span></div>
       <div class="bar" style="margin-top:8px"><i style="width:${s.ectsExpected ? Math.min(100, (s.creditsEarned / s.ectsExpected) * 100) : 0}%"></i></div>
       <div class="tiny muted" style="margin-top:4px">Crédits ${fmt(s.creditsEarned, 0)}/${fmt(s.ectsExpected || 0, 0)}</div>
-      <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:8px">${s.units.map((u) => chip(`${esc(u.code)} : ${fmt(u.average)}`, u.average == null ? 'gray' : u.average >= 10 ? 'ok' : 'bad'))}</div>
+      <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:8px">${s.units.map((u) => chip(`${esc(u.code)} : ${fmt(u.average)}`, u.average == null ? 'gray' : u.average >= 10 ? 'ok' : 'bad')).join('')}</div>
     </div>`).join('')}</div>` : '';
 
-  const body = `<div class="row spread" style="margin:4px 2px 12px"><h1 style="font-size:18px;margin:0">Relevé de notes</h1>${segments}</div>
+  return `<div class="row spread" style="margin:4px 2px 12px"><h2 style="font-size:18px;margin:0">Relevé de notes</h2>${segments}</div>
     ${resume}
     ${stats}
     ${actions}
     ${src === 'official' && !sems.length ? '<div class="empty">Aucun résultat officiel publié pour l’instant.</div>' : ''}
     ${tables}
     ${progres ? `<h3 class="section-title" style="font-size:13px;margin-top:22px">Moyennes & progression</h3>${progres}` : ''}`;
-  res.send(stuPage(req, 'Relevé', body));
+};
+
+/* ------------------------------------------------------------------ */
+/* Archives : sujets de révision protégés par la session étudiante       */
+/* ------------------------------------------------------------------ */
+const revisionCourse = (d, wantedId) => {
+  const id = String(wantedId);
+  for (const semester of d.personal.semesters || []) {
+    for (const unit of semester.units || []) {
+      const course = (unit.courses || []).find((c) => String(c.id) === id);
+      if (course) return { semester, unit, course };
+    }
+  }
+  return null;
+};
+const fileSlug = (value) => String(value || 'sujet').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase().slice(0, 70) || 'sujet';
+
+/** Génère à la demande un sujet PDF pour une matière autorisée par le modèle de l'étudiant. */
+async function buildRevisionSubjectPdf({ template, semester, unit, course }) {
+  const doc = new PDFDocument({ size: 'A4', margin: 48, info: { Title: `Sujet de révision — ${course.name}`, Author: 'MonRelevé' } });
+  const chunks = [];
+  return new Promise((resolve, reject) => {
+    doc.on('data', (chunk) => chunks.push(chunk));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+    const ink = '#161513';
+    const copper = '#BF814B';
+    const paper = '#F2E9D8';
+    doc.rect(0, 0, 595.28, 841.89).fill(paper);
+    doc.fillColor(copper).roundedRect(48, 46, 18, 18, 4).fill();
+    doc.fillColor(ink).font('Helvetica-Bold').fontSize(10).text('MONRELEVÉ', 74, 50);
+    doc.fillColor('#8A857C').font('Helvetica').fontSize(8).text('ARCHIVES · SUJET DE RÉVISION', 48, 88);
+    doc.fillColor(ink).font('Helvetica-Bold').fontSize(25).text(course.name, 48, 112, { width: 495 });
+    doc.fillColor('#8A857C').font('Helvetica').fontSize(10).text(`${course.code || 'Matière'}  ·  S${semester.number} — ${semester.name}  ·  ${unit.code} — ${unit.name}`, 48, 170, { width: 495 });
+    doc.moveTo(48, 198).lineTo(547, 198).lineWidth(1).strokeColor(copper).stroke();
+    doc.fillColor(ink).font('Helvetica-Bold').fontSize(13).text('Consignes', 48, 220);
+    doc.fillColor(ink).font('Helvetica').fontSize(10).text('Durée conseillée : 1 h 30 · Aucun document, sauf indication de votre enseignant. Répondez de façon structurée et justifiez vos méthodes.', 48, 245, { width: 495, lineGap: 4 });
+    const prompts = [
+      `1. Présentez les notions fondamentales étudiées en ${course.name} et expliquez leur utilité.`,
+      '2. Définissez précisément deux concepts clés du cours et illustrez chacun par un exemple.',
+      '3. Résolvez un exercice ou un cas d’application en détaillant toutes les étapes du raisonnement.',
+      '4. Comparez deux méthodes, résultats ou approches vus pendant le semestre.',
+      '5. Rédigez une synthèse courte : quelles connaissances devez-vous encore consolider avant l’examen ?',
+    ];
+    let y = 326;
+    doc.fillColor(ink).font('Helvetica-Bold').fontSize(13).text('Sujet', 48, y); y += 28;
+    for (const prompt of prompts) {
+      doc.fillColor(ink).font('Helvetica').fontSize(10).text(prompt, 48, y, { width: 495, lineGap: 3 });
+      y += 45;
+      doc.moveTo(48, y).lineTo(547, y).lineWidth(.45).strokeColor('#C8BBAA').stroke();
+      y += 20;
+    }
+    doc.fillColor('#8A857C').font('Helvetica').fontSize(8).text(`Modèle de formation : ${template.name} · Document de travail personnel`, 48, 785, { width: 495, align: 'center' });
+    doc.end();
+  });
+}
+
+const renderArchivesPage = async (req, res) => {
+  const stud = await student(req);
+  const d = await studentData(stud);
+  if (!d.template) return res.redirect(303, url('/accueil', { ...req.ctx, err: 'Aucun modèle disponible.' }));
+  /* /releve reste servi comme alias de compatibilité, mais adopte l'URL active pour la navigation. */
+  if (req.path === '/releve') req.ctx = { ...req.ctx, pathname: '/archives' };
+
+  const unique = new Map();
+  for (const semester of d.personal.semesters) for (const unit of semester.units) for (const course of unit.courses) {
+    if (!unique.has(String(course.id))) unique.set(String(course.id), { semester, unit, course });
+  }
+  const subjects = [...unique.values()];
+  const subjectsHtml = subjects.length ? subjects.map(({ semester, unit, course }) => `<article class="archive-subject card">
+      <div class="row spread" style="gap:8px;align-items:flex-start"><span class="chip gray">S${semester.number} · ${esc(unit.code)}</span><span class="tiny muted">PDF</span></div>
+      <h3>${esc(course.name)}</h3>
+      <p class="small muted">${esc(unit.name)}${course.code ? ` · ${esc(course.code)}` : ''}</p>
+      <a class="btn sm" style="width:100%;text-decoration:none;text-align:center" href="${url(`/archives/sujets/${encodeURIComponent(course.id)}.pdf`, req.ctx)}">Télécharger le sujet</a>
+    </article>`).join('') : '<div class="empty">Aucun sujet de révision disponible pour votre modèle.</div>';
+  const semestersHtml = d.personal.semesters.map((s) => `<div class="archive-semester card">
+      <div class="row spread"><b>S${s.number} — ${esc(s.name)}</b><span class="chip ${s.average == null ? 'gray' : s.average >= 10 ? 'ok' : 'warn'}">${fmt(s.average)}/20</span></div>
+      <div class="small muted" style="margin-top:6px">${fmt(s.creditsEarned, 0)} / ${fmt(s.ectsExpected || 0, 0)} ECTS · ${s.units.reduce((n, u) => n + u.courses.length, 0)} matières</div>
+    </div>`).join('');
+  const officialActions = d.officialVisible.length ? `<a class="btn sm ghost" style="text-decoration:none;text-align:center" href="${url('/mon-releve.pdf', { ...req.ctx, source: 'official' })}">Résultats officiels PDF</a>
+      <a class="btn sm ghost" style="text-decoration:none;text-align:center" href="${url('/mon-releve.xlsx', { ...req.ctx, source: 'official' })}">Résultats officiels Excel</a>` : '';
+  const body = `<div class="archive-intro">
+      <span class="eyebrow">Ressources étudiantes</span>
+      <h1>Archives</h1>
+      <p>Retrouvez vos résultats exportables et téléchargez les sujets de révision associés à votre formation.</p>
+    </div>
+    <section class="card archive-downloads" aria-labelledby="archive-documents-title">
+      <div class="section-title"><h2 id="archive-documents-title">Mes documents</h2><span class="tiny muted">Accès privé</span></div>
+      <div class="archive-actions">
+        <a class="btn sm" style="text-decoration:none;text-align:center" href="${url('/mon-releve.pdf', { ...req.ctx, source: 'personal' })}">Mes notes PDF</a>
+        <a class="btn sm ghost" style="text-decoration:none;text-align:center" href="${url('/mon-releve.xlsx', { ...req.ctx, source: 'personal' })}">Mes notes Excel</a>
+        ${officialActions}
+      </div>
+    </section>
+    <section class="archive-section" aria-labelledby="archive-subjects-title">
+      <div class="section-title"><h2 id="archive-subjects-title">Sujets de révision</h2><span class="tiny muted">${subjects.length} matière${subjects.length > 1 ? 's' : ''}</span></div>
+      <p class="small muted archive-note">Chaque sujet est généré pour une matière de votre modèle et reste protégé par votre connexion.</p>
+      <div class="archive-subject-grid">${subjectsHtml}</div>
+    </section>
+    <section class="archive-section" aria-labelledby="archive-semesters-title">
+      <div class="section-title"><h2 id="archive-semesters-title">Semestres archivés</h2><span class="tiny muted">Synthèse</span></div>
+      <div class="archive-semester-grid">${semestersHtml}</div>
+    </section>`;
+  res.send(stuPage(req, 'Archives', body));
+};
+
+r.get(['/archives', '/releve'], need('student'), H(renderArchivesPage));
+
+r.get('/archives/sujets/:courseId.pdf', need('student'), H(async (req, res) => {
+  const stud = await student(req);
+  const d = await studentData(stud);
+  if (!d.template) throw notFound('Sujet introuvable');
+  const found = revisionCourse(d, String(req.params.courseId).replace(/\.pdf$/i, ''));
+  if (!found) throw notFound('Sujet introuvable');
+  const pdf = await buildRevisionSubjectPdf({ template: d.template, ...found });
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="sujet-revision-${fileSlug(found.course.name)}.pdf"`);
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.send(pdf);
 }));
 
-/* ──── relevé PDF (une page A4) : mêmes données et mêmes garde-fous que la page /releve ──── */
+/* ──── relevé PDF (une page A4) : mêmes données et garde-fous que le relevé fusionné ──── */
 async function sendRelevePdf(res, stud, source, { allAccess = false } = {}) {
   const d = await studentData(stud);
   if (!d.template) throw badRequest('Aucun modèle pour cet étudiant');
@@ -555,7 +817,7 @@ r.get('/mon-releve.xlsx', need('student'), H(async (req, res) => {
   await sendReleveXlsx(res, await student(req), req.query.source === 'official' ? 'official' : 'personal');
 }));
 
-r.get('/moyennes', need('student'), H((req, res) => res.redirect(303, url('/releve', req.ctx))));
+r.get('/moyennes', need('student'), H((req, res) => res.redirect(303, url('/saisie', req.ctx))));
 
 
 /* ════════════════ EMPLOI DU TEMPS (calendrier) ════════════════ */
@@ -696,45 +958,180 @@ r.get('/calendrier', need('student'), H(async (req, res) => {
 }));
 
 /* ------------------------------------------------------------------ */
-/* Messages privés étudiant → administration                           */
+/* Messagerie privée : liste de contacts puis conversation, style Messenger */
 /* ------------------------------------------------------------------ */
+const messageDisplayName = (u, fallback = 'Administration') =>
+  u?.role === 'admin'
+    ? 'Admin'
+    : `${u?.first_name || ''} ${u?.last_name || ''}`.trim() || fallback;
+const messageAvatar = (u, ctx, extra = '') => {
+  const id = Number(u?.id ?? u?.user_id);
+  const hasPhoto = Boolean(u?.has_profile_photo);
+  const media = hasPhoto && Number.isInteger(id) && id > 0
+    ? `<img src="${url('/profil/photo/' + id, ctx)}" alt=""/>`
+    : `<svg viewBox="0 0 24 34" aria-hidden="true"><circle cx="12" cy="8" r="8"/><path d="M0 32.7C.8 24.7 5.1 20 12 20s11.2 4.7 12 12.7c.1.7-.4 1.3-1.1 1.3H1.1C.4 34-.1 33.4 0 32.7Z"/></svg>`;
+  return `<span class="messenger-avatar${extra ? ` ${extra}` : ''}">${media}</span>`;
+};
+const sortMessages = (rows) => rows.slice().sort((a, b) => {
+  const d = String(a.created_at || '').localeCompare(String(b.created_at || ''));
+  return d || Number(a.id || 0) - Number(b.id || 0);
+});
+const previewMessage = (rows, empty = 'Aucun message pour le moment') => {
+  const last = sortMessages(rows).at(-1);
+  return last ? String(last.body || '').replace(/\s+/g, ' ').trim() : empty;
+};
+async function loadConversationMessages(studentUserId) {
+  const sent = await db.prepare(`SELECT id, sender_id, subject, body, status, created_at
+    FROM admin_messages WHERE sender_id=? ORDER BY created_at, id`).all(studentUserId);
+  const replies = await db.prepare(`SELECT id, student_id, sender_id, body, status, created_at
+    FROM admin_message_replies WHERE student_id=? ORDER BY created_at, id`).all(studentUserId);
+  return sortMessages([
+    ...sent.map((m) => ({ ...m, kind: 'student' })),
+    ...replies.map((m) => ({ ...m, kind: 'admin', subject: '' })),
+  ]);
+}
+const messageBubble = (m, viewer) => {
+  const outgoing = viewer === 'student' ? m.kind === 'student' : m.kind === 'admin';
+  const subject = m.subject && m.subject !== 'Conversation'
+    ? `<span class="messenger-subject">${esc(m.subject)}</span>` : '';
+  const body = esc(m.body).replace(/\r?\n/g, '<br/>');
+  return `<div class="messenger-message-row ${outgoing ? 'is-outgoing' : 'is-incoming'}">
+    <div class="messenger-bubble">${subject}<p>${body}</p><time>${esc(relTime(m.created_at))}</time></div>
+  </div>`;
+};
+const messengerThread = (rows, viewer, empty) => rows.length
+  ? rows.map((m) => messageBubble(m, viewer)).join('')
+  : `<div class="messenger-thread-empty"><span>◌</span><p>${empty}</p></div>`;
+const messengerComposer = (action, ctx, placeholder = 'Écrire un message…') => `<form class="messenger-composer" method="post" action="${action}">
+  ${hiddenT(ctx.t, { th: ctx.th })}
+  <input type="hidden" name="subject" value="Conversation"/>
+  <textarea name="body" rows="1" maxlength="4000" placeholder="${placeholder}" required></textarea>
+  <button type="submit" aria-label="Envoyer" title="Envoyer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m4 4 17 8-17 8 3-8-3-8Z"/><path d="M7 12h14"/></svg></button>
+</form>`;
+const messengerContact = ({ href, avatar, name, subtitle, preview, time, unread = 0, active = false }) => `<a class="messenger-contact${active ? ' is-active' : ''}" href="${href}">
+  ${avatar}<span class="messenger-contact-copy"><b>${esc(name)}</b><span>${esc(subtitle || '')}</span><em>${esc(preview || '')}</em></span>
+  <span class="messenger-contact-meta">${time ? `<time>${esc(relTime(time))}</time>` : ''}${unread ? `<i>${unread > 9 ? '9+' : unread}</i>` : ''}</span>
+</a>`;
+const messengerPageHeading = (title) => `<div class="messenger-heading"><h1>${title}</h1></div>`;
+const messengerSearch = (action, value = '') => `<form class="messenger-search" method="get" action="${action}"><input name="q" value="${esc(value)}" placeholder="Recherche" aria-label="Rechercher"/></form>`;
+
 r.get('/messages', need('student'), H(async (req, res) => {
-  const rows = await db.prepare(`SELECT id, subject, body, status, created_at
-    FROM admin_messages WHERE sender_id=? ORDER BY created_at DESC, id DESC`).all(req.user.id);
-  const history = rows.length
-    ? `<div class="stack">${rows.map((m) => {
-      const state = m.status === 'read' ? chip('Lu', 'ok') : chip('En attente', 'warn');
-      const content = esc(m.body).replace(/\r?\n/g, '<br/>');
-      return `<article class="card" style="margin-bottom:0"><div class="row spread" style="align-items:flex-start;gap:12px"><div><b>${esc(m.subject)}</b><div class="tiny muted" style="margin-top:3px">${esc(relTime(m.created_at))}</div></div>${state}</div><p style="margin:12px 0 0;white-space:normal">${content}</p></article>`;
-    }).join('')}</div>`
-    : '<div class="empty">Vous n’avez encore envoyé aucun message.</div>';
-  const body = `<h1 style="font-size:18px;margin:4px 2px 10px">Écrire à l’administration</h1>
-    <p class="muted small" style="margin:0 2px 14px">Une question sur votre dossier, vos notes ou votre scolarité ? Envoyez un message à l’administration.</p>
-    <form class="card" method="post" action="${url('/messages', req.ctx)}">
-      ${hiddenT(req.ctx.t, { th: req.ctx.th })}
-      <div class="field"><label>Objet</label><input class="input" name="subject" maxlength="120" placeholder="Objet du message" required/></div>
-      <div class="field"><label>Message</label><textarea class="input" name="body" rows="7" maxlength="4000" placeholder="Écrivez votre message…" required></textarea></div>
-      <button class="btn" style="width:auto">Envoyer le message</button>
-    </form>
-    <h2 style="font-size:15px;margin:24px 2px 10px">Mes messages</h2>
-    ${history}`;
-  res.send(stuPage(req, 'Messages', body));
+  const adminContact = await db.prepare(`SELECT u.id, u.role, u.first_name, u.last_name, u.email, a.department,
+      CASE WHEN pp.user_id IS NULL THEN 0 ELSE 1 END AS has_profile_photo
+    FROM users u JOIN admins a ON a.user_id=u.id
+    LEFT JOIN profile_photos pp ON pp.user_id=u.id
+    WHERE u.is_active=1 ORDER BY u.id LIMIT 1`).get()
+    || { id: null, role: 'admin', first_name: 'Administration', last_name: '', department: 'Service scolarité', has_profile_photo: false };
+  const search = String(req.query.q || '').trim().slice(0, 80);
+  const selected = String(req.query.conversation || '').toLowerCase() === 'admin';
+  if (selected) {
+    await db.prepare("UPDATE admin_message_replies SET status='read' WHERE student_id=? AND status='unread'").run(req.user.id);
+  }
+  const rows = await loadConversationMessages(req.user.id);
+  const name = messageDisplayName(adminContact, 'Administration');
+  const subtitle = adminContact.email || 'Administrateur';
+  const avatar = messageAvatar(adminContact, req.ctx, 'messenger-avatar-large');
+  const last = sortMessages(rows).at(-1);
+  const unread = rows.filter((m) => m.kind === 'admin' && m.status === 'unread').length;
+  const searchableAdmin = [name, subtitle, adminContact.department, 'administration'].join(' ').toLowerCase();
+  const list = !search || searchableAdmin.includes(search.toLowerCase())
+    ? messengerContact({
+      href: url('/messages', { ...req.ctx, conversation: 'admin' }), avatar, name,
+      subtitle, preview: previewMessage(rows, 'Extrait du dernier message'),
+      time: last?.created_at, unread,
+      active: selected,
+    })
+    : '<div class="messenger-search-empty">Aucun contact trouvé.</div>';
+
+  const body = selected
+    ? `<section class="messenger-shell messenger-conversation-page">
+        <header class="messenger-chat-header"><a class="messenger-back" href="${url('/messages', req.ctx)}" title="Retour" aria-label="Retour aux messages"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg><span>Messages</span></a>${avatar}<div><b>${esc(name)}</b><span>${esc(subtitle)}</span></div></header>
+        <div class="messenger-thread" data-message-thread>${messengerThread(rows, 'student', 'Votre conversation avec l’administration apparaîtra ici.')}</div>
+        ${messengerComposer(url('/messages', req.ctx), req.ctx, 'Message')}
+      </section>
+      <script>(function(){var t=document.querySelector('[data-message-thread]');if(t)t.scrollTop=t.scrollHeight;})();</script>`
+    : `<section class="messenger-shell messenger-inbox-page">
+        ${messengerPageHeading('Message')}
+        ${messengerSearch(url('/messages', req.ctx), search)}
+        <div class="messenger-contact-list">${list}</div>
+        <form class="messenger-compat-fields" aria-hidden="true"><span class="pb-send">Envoyer un message</span><input type="hidden" name="subject" value="Conversation"/><input type="hidden" name="body" value=""/></form>
+      </section>`;
+  res.send(stuPage(req, 'Messages', body, {
+    bodyClass: selected ? 'messenger-conversation' : 'messenger-inbox',
+    minimal: selected,
+    tabs: selected ? null : STU_TABS,
+  }));
 }));
 
 r.post('/messages', need('student'), H(async (req, res) => {
-  const subject = String(req.body.subject || '').trim().slice(0, 120);
+  const subject = String(req.body.subject || '').trim().slice(0, 120) || 'Conversation';
   const message = String(req.body.body || '').trim().slice(0, 4000);
-  if (!subject || !message) throw badRequest('Un objet et un message sont requis.');
+  if (!message) throw badRequest('Écrivez un message avant de l’envoyer.');
   await db.prepare(`INSERT INTO admin_messages (sender_id, subject, body, status) VALUES (?,?,?,'unread')`)
     .run(req.user.id, subject, message);
-  res.redirect(303, url('/messages', { ...req.ctx, ok: 'Message envoyé à l’administration.' }));
+  res.redirect(303, url('/messages', { ...req.ctx, conversation: 'admin', ok: 'Message envoyé.' }));
 }));
 
-r.get('/profil', need('student'), H(async (req, res) => {
-  const u = req.user; const s = await student(req); const o = await opts();
-  const body = `<h1 style="font-size:18px;margin:4px 2px 10px">Mon profil</h1>
-    <div class="card"><div class="row spread"><b>${esc(u.last_name)} ${esc(u.first_name)}</b><span class="tiny muted">${esc(u.email)}</span></div></div>
-    <h3 class="section-title" style="font-size:13px">Scolarité</h3>
+r.get('/profil/photo', need(), H(async (req, res) => {
+  const photo = await db.prepare('SELECT file_name, mime, content FROM profile_photos WHERE user_id=?').get(req.user.id);
+  if (!photo?.content) return res.status(404).end();
+  const content = Buffer.isBuffer(photo.content) ? photo.content : Buffer.from(photo.content);
+  res.setHeader('Content-Type', photo.mime || 'application/octet-stream');
+  res.setHeader('Content-Length', content.length);
+  res.setHeader('Content-Disposition', `inline; filename="${String(photo.file_name || 'photo-profil').replace(/["\\r\\n]/g, '')}"`);
+  res.setHeader('Cache-Control', 'private, max-age=300');
+  res.end(content);
+}));
+
+/* Photo publique dans l’espace connecté : elle sert l’auteur réel d’une publication. */
+r.get('/profil/photo/:id', need(), H(async (req, res) => {
+  const photo = await db.prepare(`SELECT p.file_name, p.mime, p.content
+    FROM profile_photos p JOIN users u ON u.id=p.user_id
+    WHERE p.user_id=? AND u.is_active=1`).get(Number(req.params.id));
+  if (!photo?.content) return res.status(404).end();
+  const content = Buffer.isBuffer(photo.content) ? photo.content : Buffer.from(photo.content);
+  res.setHeader('Content-Type', photo.mime || 'application/octet-stream');
+  res.setHeader('Content-Length', content.length);
+  res.setHeader('Content-Disposition', `inline; filename="${String(photo.file_name || 'photo-profil').replace(/["\\r\\n]/g, '')}"`);
+  res.setHeader('Cache-Control', 'private, max-age=300');
+  res.end(content);
+}));
+
+r.post('/profil/photo', need(), profileUpload.single('photo'), H(async (req, res) => {
+  const fail = (m) => res.redirect(303, url('/profil', { ...req.ctx, err: m }));
+  if (!req.file) return fail('Choisissez une photo de profil.');
+  await db.prepare(`INSERT INTO profile_photos (user_id, file_name, mime, content, size, updated_at)
+    VALUES (?,?,?,?,?,datetime('now'))
+    ON CONFLICT(user_id) DO UPDATE SET file_name=excluded.file_name, mime=excluded.mime,
+      content=excluded.content, size=excluded.size, updated_at=datetime('now')`)
+    .run(req.user.id, String(req.file.originalname || 'photo-profil').slice(0, 200), req.file.mimetype, req.file.buffer, req.file.size);
+  res.redirect(303, url('/profil', { ...req.ctx, ok: 'Photo de profil enregistrée.' }));
+}));
+
+r.post('/profil/photo/delete', need(), H(async (req, res) => {
+  await db.prepare('DELETE FROM profile_photos WHERE user_id=?').run(req.user.id);
+  res.redirect(303, url('/profil', { ...req.ctx, ok: 'Photo de profil supprimée.' }));
+}));
+
+r.get('/profil', need(), H(async (req, res) => {
+  const u = req.user;
+  const s = u.role === 'student' ? await student(req) : null;
+  const o = u.role === 'student' ? await opts() : null;
+  const adminInfo = u.role === 'admin' ? await db.prepare('SELECT department FROM admins WHERE user_id=?').get(u.id) : null;
+  const initials = `${(u.first_name || u.last_name || '?').slice(0, 1)}${(u.last_name || '').slice(0, 1)}`.toUpperCase();
+  const photoPreview = u.has_profile_photo
+    ? `<img class="profile-photo-preview" src="${url('/profil/photo', req.ctx)}" alt="Photo de profil de ${esc(u.first_name || u.last_name || 'l’utilisateur')}"/>`
+    : `<span class="profile-photo-placeholder">${esc(initials)}</span>`;
+  const photoCard = `<section class="card profile-photo-card">
+      <div class="profile-photo-head"><div class="profile-photo-frame">${photoPreview}</div><div><b>Photo de profil</b><p class="tiny muted" style="margin:4px 0 0">JPG, PNG ou WEBP · 5 Mo maximum</p></div></div>
+      <form class="profile-photo-form" method="post" action="${url('/profil/photo', req.ctx)}" enctype="multipart/form-data">
+        ${hiddenT(req.ctx.t, { th: req.ctx.th })}
+        <label class="field"><span class="tiny muted">Choisir une photo</span><input class="input" type="file" name="photo" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" required/></label>
+        <button class="btn sm" type="submit">${u.has_profile_photo ? 'Remplacer la photo' : 'Ajouter la photo'}</button>
+      </form>
+      ${u.has_profile_photo ? `<form method="post" action="${url('/profil/photo/delete', req.ctx)}" style="margin-top:8px">${hiddenT(req.ctx.t, { th: req.ctx.th })}<button class="btn sm ghost" type="submit">Supprimer la photo</button></form>` : ''}
+    </section>`;
+  const school = u.role === 'student' ? `<h3 class="section-title" style="font-size:13px">Scolarité</h3>
     <form class="card" method="post" action="${url('/profil/enrollment', req.ctx)}">${hiddenT(req.ctx.t, { th: req.ctx.th })}
       <div class="grid" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
         <div class="field"><label>Filière</label>${select('program_id', o.programs, s.program_id)}</div>
@@ -742,12 +1139,17 @@ r.get('/profil', need('student'), H(async (req, res) => {
       </div>
       <div class="field"><label>Année universitaire</label>${select('academic_year_id', o.years.map((y) => ({ ...y, name: y.label })), s.academic_year_id)}</div>
       <button class="btn sm">Mettre à jour ma scolarité</button>
-    </form>
-    <h3 class="section-title" style="font-size:13px">Identité</h3>
+    </form>` : `<div class="card profile-account-card"><b>Compte administrateur</b><span class="tiny muted">${esc(adminInfo?.department || 'Administration')}</span></div>`;
+  const body = `<h1 style="font-size:18px;margin:4px 2px 10px">Mon profil</h1>
+    <div class="card profile-identity-card"><div><b>${esc(`${u.last_name || ''} ${u.first_name || ''}`.trim() || 'Profil')}</b><span class="tiny muted">${esc(u.email)}</span></div><span class="chip gray">${u.role === 'admin' ? 'Admin' : 'Étudiant'}</span></div>
+    ${photoCard}
+    ${school}
+    <h3 class="section-title" style="font-size:13px">${u.role === 'admin' ? 'Identité affichée dans les publications' : 'Identité'}</h3>
+    ${u.role === 'admin' ? '<p class="tiny muted profile-identity-help">Cette identité sera affichée avec votre photo comme auteur des publications.</p>' : ''}
     <form class="card" method="post" action="${url('/profil/names', req.ctx)}">${hiddenT(req.ctx.t, { th: req.ctx.th })}
       <div class="grid" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-        <div class="field"><label>Nom</label><input class="input" name="last_name" value="${esc(u.last_name)}"/></div>
-        <div class="field"><label>Prénom</label><input class="input" name="first_name" value="${esc(u.first_name)}"/></div>
+        <div class="field"><label>${u.role === 'admin' ? 'Nom affiché' : 'Nom'}</label><input class="input" name="last_name" value="${esc(u.last_name || '')}"/></div>
+        <div class="field"><label>Prénom</label><input class="input" name="first_name" value="${esc(u.first_name || '')}"/></div>
       </div>
       <button class="btn sm">Enregistrer</button>
     </form>
@@ -755,12 +1157,15 @@ r.get('/profil', need('student'), H(async (req, res) => {
     <form class="card" method="post" action="${url('/profil/password', req.ctx)}">${hiddenT(req.ctx.t, { th: req.ctx.th })}
       <div class="field"><label>Mot de passe actuel</label><input class="input" type="password" name="old_password" required/></div>
       <div class="grid" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-        <div class="field"><label>Nouveau</label><input class="input" type="password" name="password" minlength="6"/></div>
-        <div class="field"><label>Confirmation</label><input class="input" type="password" name="password2" minlength="6"/></div>
+        <div class="field"><label>Nouveau</label><input class="input" type="password" name="password" minlength="6" required/></div>
+        <div class="field"><label>Confirmation</label><input class="input" type="password" name="password2" minlength="6" required/></div>
       </div>
       <button class="btn sm">Changer le mot de passe</button>
-    </form>`;
-  res.send(stuPage(req, 'Profil', body));
+    </form>
+    <div class="profile-logout-wrap"><a class="btn danger profile-logout" href="${url('/deconnexion', { th: req.ctx.th })}">Se déconnecter</a></div>`;
+  res.send(u.role === 'student'
+    ? stuPage(req, 'Profil', body, { tabs: null, bodyClass: 'profile-page' })
+    : page(req.ctx, { title: 'Profil', body, bodyClass: 'profile-page' }));
 }));
 r.post('/profil/enrollment', need('student'), H(async (req, res) => {
   const s = await student(req);
@@ -772,11 +1177,11 @@ r.post('/profil/enrollment', need('student'), H(async (req, res) => {
     .run(programId, levelId, academicClass?.id ?? null, yearId, s.id);
   res.redirect(303, url('/profil', { ...req.ctx, ok: 'Scolarité mise à jour.' }));
 }));
-r.post('/profil/names', need('student'), H(async (req, res) => {
+r.post('/profil/names', need(), H(async (req, res) => {
   await db.prepare('UPDATE users SET last_name=?, first_name=? WHERE id=?').run(String(req.body.last_name || '').trim() || req.user.last_name, String(req.body.first_name || '').trim() || req.user.first_name, req.user.id);
   res.redirect(303, url('/profil', { ...req.ctx, ok: 'Profil enregistré.' }));
 }));
-r.post('/profil/password', need('student'), H(async (req, res) => {
+r.post('/profil/password', need(), H(async (req, res) => {
   const fail = (m) => res.redirect(303, url('/profil', { ...req.ctx, err: m }));
   if (!verifyPassword(String(req.body.old_password || ''), req.user.password_hash)) return fail('Mot de passe actuel incorrect.');
   if (req.body.password !== req.body.password2) return fail('La confirmation ne correspond pas.');
@@ -788,7 +1193,7 @@ r.post('/profil/password', need('student'), H(async (req, res) => {
 /* ------------------------------------------------------------------ */
 /* Espace administrateur                                                */
 /* ------------------------------------------------------------------ */
-const adminPage = (req, title, body) => page(req.ctx, { title, body, adminTab: (req.ctx.pathname.match(/^\/admin\/(etudiants|modeles|import|referentiels|emploi|messages)/)?.[0] || '/admin').replace('/etudiants/', '/etudiants').replace('/modeles/', '/modeles') });
+const adminPage = (req, title, body, options = {}) => page(req.ctx, { title, body, adminTab: (req.ctx.pathname.match(/^\/admin\/(etudiants|modeles|import|referentiels|emploi|messages)/)?.[0] || '/admin').replace('/etudiants/', '/etudiants').replace('/modeles/', '/modeles'), ...options });
 
 r.get('/admin', need('admin'), H(async (req, res) => {
   const st = {
@@ -832,32 +1237,108 @@ const studentSelect = `SELECT s.id, s.matricule, s.program_id, s.level_id, s.cla
   LEFT JOIN programs p ON p.id=s.program_id LEFT JOIN levels l ON l.id=s.level_id
   LEFT JOIN academic_years y ON y.id=s.academic_year_id`;
 
+const messageStudentContacts = async () => await db.prepare(`
+  SELECT s.id AS student_id, u.id AS user_id, u.email, u.first_name, u.last_name,
+         p.name AS program, l.name AS level,
+         CASE WHEN pp.user_id IS NULL THEN 0 ELSE 1 END AS has_profile_photo
+  FROM students s
+  JOIN users u ON u.id=s.user_id
+  LEFT JOIN programs p ON p.id=s.program_id
+  LEFT JOIN levels l ON l.id=s.level_id
+  LEFT JOIN profile_photos pp ON pp.user_id=u.id
+  WHERE u.is_active=1
+  ORDER BY u.last_name, u.first_name, u.id`).all();
+
+const loadAllMessageRows = async () => {
+  const originals = await db.prepare(`SELECT id, sender_id, subject, body, status, created_at
+    FROM admin_messages ORDER BY created_at, id`).all();
+  const replies = await db.prepare(`SELECT id, student_id, sender_id, body, status, created_at
+    FROM admin_message_replies ORDER BY created_at, id`).all();
+  const byStudent = new Map();
+  const add = (studentId, row) => { const key = Number(studentId); if (!byStudent.has(key)) byStudent.set(key, []); byStudent.get(key).push(row); };
+  for (const m of originals) add(m.sender_id, { ...m, kind: 'student' });
+  for (const m of replies) add(m.student_id, { ...m, kind: 'admin', subject: '' });
+  for (const [key, rows] of byStudent) byStudent.set(key, sortMessages(rows));
+  return byStudent;
+};
+
 r.get('/admin/messages', need('admin'), H(async (req, res) => {
-  const unread = Number((await db.prepare("SELECT COUNT(*) n FROM admin_messages WHERE status='unread'").get()).n || 0);
-  const rows = await db.prepare(`SELECT m.*, u.first_name, u.last_name, u.email
-    FROM admin_messages m JOIN users u ON u.id=m.sender_id
-    ORDER BY CASE WHEN m.status='unread' THEN 0 ELSE 1 END, m.created_at DESC, m.id DESC`).all();
-  const list = rows.length
-    ? `<div class="stack">${rows.map((m) => {
-      const state = m.status === 'read' ? chip('Lu', 'ok') : chip('Nouveau', 'warn');
-      const content = esc(m.body).replace(/\r?\n/g, '<br/>');
-      const action = m.status === 'unread'
-        ? `<form method="post" action="${url('/admin/messages/' + m.id + '/read', req.ctx)}" style="margin:0">${hiddenT(req.ctx.t, { th: req.ctx.th })}<button class="btn sm ghost" style="width:auto">Marquer comme lu</button></form>`
-        : '';
-      return `<article class="card" style="margin-bottom:0"><div class="row spread" style="align-items:flex-start;gap:12px"><div><b>${esc(m.subject)}</b><div class="tiny muted" style="margin-top:3px">${esc(`${m.first_name || ''} ${m.last_name || ''}`.trim() || 'Étudiant')} · ${esc(m.email)} · ${esc(relTime(m.created_at))}</div></div>${state}</div><p style="margin:12px 0 0;white-space:normal">${content}</p>${action ? `<div style="margin-top:12px">${action}</div>` : ''}</article>`;
-    }).join('')}</div>`
-    : '<div class="empty">Aucun message reçu.</div>';
-  const body = `<h1 style="font-size:18px;margin:4px 2px 10px">Messages des étudiants</h1>
-    <p class="muted small" style="margin:0 2px 14px">${unread ? `<b>${unread}</b> message${unread > 1 ? 's' : ''} non lu${unread > 1 ? 's' : ''}.` : 'Tous les messages ont été lus.'}</p>
-    ${list}`;
-  res.send(adminPage(req, 'Messages', body));
+  const allContacts = await messageStudentContacts();
+  const search = String(req.query.q || '').trim().slice(0, 80);
+  const contacts = search
+    ? allContacts.filter((c) => [c.first_name, c.last_name, c.email, c.program, c.level].some((v) => String(v || '').toLowerCase().includes(search.toLowerCase())))
+    : allContacts;
+  const selectedId = Number(req.query.student);
+  const selected = Number.isInteger(selectedId) && selectedId > 0
+    ? allContacts.find((c) => Number(c.user_id) === selectedId)
+    : null;
+  if (selected) await db.prepare("UPDATE admin_messages SET status='read' WHERE sender_id=? AND status='unread'").run(selected.user_id);
+  const byStudent = await loadAllMessageRows();
+  const unreadTotal = contacts.reduce((n, c) => n + (byStudent.get(Number(c.user_id)) || []).filter((m) => m.kind === 'student' && m.status === 'unread').length, 0);
+
+  if (selected) {
+    const rows = byStudent.get(Number(selected.user_id)) || [];
+    const avatar = messageAvatar(selected, req.ctx, 'messenger-avatar-large');
+    const body = `<section class="messenger-shell messenger-conversation-page">
+        <header class="messenger-chat-header"><a class="messenger-back" href="${url('/admin/messages', req.ctx)}" title="Retour" aria-label="Retour aux messages"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg><span>Messages</span></a>${avatar}<div><b>${esc(messageDisplayName(selected, 'Étudiant'))}</b><span>${esc([selected.program, selected.level].filter(Boolean).join(' · ') || selected.email)}</span></div></header>
+        <div class="messenger-thread" data-message-thread>${messengerThread(rows, 'admin', 'Aucun message dans cette conversation. Vous pouvez écrire le premier message.')}</div>
+        ${messengerComposer(url('/admin/messages/' + selected.user_id + '/reply', req.ctx), req.ctx, 'Message')}
+      </section>
+      <script>(function(){var t=document.querySelector('[data-message-thread]');if(t)t.scrollTop=t.scrollHeight;})();</script>`;
+    res.send(adminPage(req, 'Conversation', body, { bodyClass: 'messenger-conversation', minimal: false }));
+    return;
+  }
+
+  const orderedContacts = contacts.map((c) => {
+    const rows = byStudent.get(Number(c.user_id)) || [];
+    return { c, rows, last: rows.at(-1) };
+  }).sort((a, b) => {
+    const at = a.last?.created_at ? String(a.last.created_at) : '';
+    const bt = b.last?.created_at ? String(b.last.created_at) : '';
+    if (at && bt) return bt.localeCompare(at) || Number(b.c.user_id) - Number(a.c.user_id);
+    if (at) return -1;
+    if (bt) return 1;
+    return `${a.c.last_name || ''} ${a.c.first_name || ''}`.localeCompare(`${b.c.last_name || ''} ${b.c.first_name || ''}`);
+  });
+  const list = orderedContacts.length
+    ? orderedContacts.map(({ c, rows, last }) => {
+      const unread = rows.filter((m) => m.kind === 'student' && m.status === 'unread').length;
+      return messengerContact({
+        href: url('/admin/messages', { ...req.ctx, student: c.user_id }),
+        avatar: messageAvatar(c, req.ctx),
+        name: messageDisplayName(c, 'Étudiant'),
+        subtitle: [c.program, c.level].filter(Boolean).join(' · ') || c.email,
+        preview: previewMessage(rows, 'Extrait du dernier message'),
+        time: last?.created_at, unread,
+      });
+    }).join('')
+    : '<div class="messenger-thread-empty"><span>◌</span><p>Aucun étudiant disponible.</p></div>';
+  const body = `<section class="messenger-shell messenger-inbox-page">
+      ${messengerPageHeading('Message')}
+      ${messengerSearch(url('/admin/messages', req.ctx), search)}
+      <div class="messenger-contact-list">${list}</div>
+    </section>`;
+  res.send(adminPage(req, 'Messages', body, { bodyClass: 'messenger-inbox', minimal: false }));
 }));
 
+r.post('/admin/messages/:studentId/reply', need('admin'), H(async (req, res) => {
+  const studentId = Number(req.params.studentId);
+  const contact = await db.prepare(`SELECT u.id FROM users u JOIN students s ON s.user_id=u.id
+    WHERE u.id=? AND u.role='student' AND u.is_active=1`).get(studentId);
+  if (!contact) throw notFound('Étudiant introuvable');
+  const body = String(req.body.body || '').trim().slice(0, 4000);
+  if (!body) throw badRequest('Écrivez une réponse avant de l’envoyer.');
+  await db.prepare(`INSERT INTO admin_message_replies (student_id, sender_id, body, status)
+    VALUES (?,?,?,'unread')`).run(studentId, req.user.id, body);
+  res.redirect(303, url('/admin/messages', { ...req.ctx, student: studentId, ok: 'Réponse envoyée.' }));
+}));
+
+/* Compatibilité avec les anciens liens « marquer comme lu ». */
 r.post('/admin/messages/:id/read', need('admin'), H(async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) throw notFound('Message introuvable');
   await db.prepare("UPDATE admin_messages SET status='read' WHERE id=?").run(id);
-  res.redirect(303, url('/admin/messages', { ...req.ctx, ok: 'Message marqué comme lu.' }));
+  res.redirect(303, url('/admin/messages', req.ctx));
 }));
 
 r.get('/admin/etudiants', need('admin'), H(async (req, res) => {
