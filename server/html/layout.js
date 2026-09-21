@@ -142,7 +142,7 @@ export function page(ctx, { title = 'MonRelevé', body = '', tabs = null, adminT
 
   const adminNav = !minimal && adminTab ? `<nav class="admin-nav" aria-label="Navigation administration">
       ${[['/accueil', 'Annonces'], ['/admin', 'Tableau de bord'], ['/admin/etudiants', 'Étudiants'], ['/admin/modeles', 'Modèles'], ['/admin/import', 'Import Excel'], ['/admin/referentiels', 'Référentiels'], ['/admin/archives', 'Archives'], ['/admin/emploi', 'Calendrier'], ['/admin/messages', 'Messages']]
-        .map(([p, l]) => `<a href="${url(p, { t: ctx.t, th })}" class="chip ${p === adminTab ? 'violet' : 'gray'}">${l}</a>`).join('')}
+        .map(([p, l]) => `<a href="${url(p, { t: ctx.t, th })}" class="admin-nav-link${p === adminTab ? ' is-active' : ''}"${p === adminTab ? ' aria-current="page"' : ''}>${l}</a>`).join('')}
     </nav>` : '';
 
   const flash = ctx.flash ? `<div class="banner ok" style="margin:10px 14px 0">${ctx.flash}</div>` : '';

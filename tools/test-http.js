@@ -85,6 +85,10 @@ for (const [chemin, attendu] of [
   verifier(`GET ${chemin} → 200`, r.statut === 200, `statut ${r.statut}`);
   verifier(`GET ${chemin} : contenu attendu`, attendu.test(r.texte));
   propre(chemin, r);
+  if (chemin.startsWith('/admin')) {
+    const adminLinks = [...r.texte.matchAll(/class="admin-nav-link(?: is-active)?"/g)];
+    verifier(`GET ${chemin} : barre admin commune au tableau de bord`, /<nav class="admin-nav" aria-label="Navigation administration">/.test(r.texte) && adminLinks.length === 9 && /aria-current="page"/.test(r.texte));
+  }
   if (chemin === '/accueil') {
     verifier('HTML étudiant/admin sans jeton de session', !/[?&]t=/.test(r.texte) && !/name="t"/.test(r.texte));
     verifier('composeur admin : image jointe et multipart', /enctype="multipart\/form-data"/.test(r.texte) && /name="image"/.test(r.texte));

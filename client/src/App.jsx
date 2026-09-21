@@ -70,11 +70,11 @@ function AdminLayout() {
   return (
     <>
       <TopBar title="Espace administrateur" />
-      <nav style={{ position: 'sticky', top: 55, zIndex: 25, background: 'color-mix(in srgb, var(--card) 92%, transparent)', backdropFilter: 'blur(10px)', borderBottom: '1px solid var(--line)', padding: '8px 12px', display: 'flex', gap: 6, overflowX: 'auto' }}>
+      <nav className="admin-nav" aria-label="Navigation administration">
         {tabs.map(([to, label, exact]) => (
           <NavLink key={to} to={to} end={exact}
-            className={({ isActive }) => `chip ${isActive ? 'violet' : 'gray'}`}
-            style={{ textDecoration: 'none', flex: 'none', fontSize: 12.5, padding: '6px 12px' }}>
+            className={({ isActive }) => `admin-nav-link${isActive ? ' is-active' : ''}`}
+            aria-current={pathname === to || (!exact && pathname.startsWith(to + '/')) ? 'page' : undefined}>
             {label}
           </NavLink>
         ))}
