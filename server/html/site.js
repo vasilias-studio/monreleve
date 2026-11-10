@@ -1006,9 +1006,25 @@ const sortMessages = (rows) => rows.slice().sort((a, b) => {
   const d = String(a.created_at || '').localeCompare(String(b.created_at || ''));
   return d || Number(a.id || 0) - Number(b.id || 0);
 });
-const previewMessage = (rows, empty = 'Aucun message pour le moment') => {
+const previewMessage = (rows, empty = 'Aucun message pour le moment', viewer = null) => {
   const last = sortMessages(rows).at(-1);
-  return last ? String(last.body || '').replace(/\s+/g, ' ').trim() : empty;
+  if (!last) return empty;
+  const text = String(last.body || '').replace(/\s+/g, ' ').trim();
+  const mine = viewer && (viewer === 'student' ? last.kind === 'student' : last.kind === 'admin');
+  return mine ? `Vous: ${text}` : text;
+};
+/* Heure façon Messenger : « 12:50 » aujourd'hui, « lun. » cette semaine, sinon « 3 nov. » */
+const messengerTime = (sqliteDate) => {
+  if (!sqliteDate) return '';
+  const raw = String(sqliteDate);
+  const t = Date.parse(raw.includes('T') ? raw : raw.replace(' ', 'T') + 'Z');
+  if (!Number.isFinite(t)) return '';
+  const tz = 'Indian/Antananarivo';
+  const day = (d) => new Intl.DateTimeFormat('fr-FR', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+  const now = Date.now();
+  if (day(t) === day(now)) return new Intl.DateTimeFormat('fr-FR', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(t);
+  if (now - t < 6 * 86400000) return new Intl.DateTimeFormat('fr-FR', { timeZone: tz, weekday: 'short' }).format(t);
+  return new Intl.DateTimeFormat('fr-FR', { timeZone: tz, day: 'numeric', month: 'short' }).format(t);
 };
 async function loadConversationMessages(studentUserId) {
   const sent = await db.prepare(`SELECT id, sender_id, subject, body, status, created_at
@@ -1038,12 +1054,12 @@ const messengerComposer = (action, ctx, placeholder = 'Écrire un message…') =
   <textarea name="body" rows="1" maxlength="4000" placeholder="${placeholder}" required></textarea>
   <button type="submit" aria-label="Envoyer" title="Envoyer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m4 4 17 8-17 8 3-8-3-8Z"/><path d="M7 12h14"/></svg></button>
 </form>`;
-const messengerContact = ({ href, avatar, name, subtitle, preview, time, unread = 0, active = false }) => `<a class="messenger-contact${active ? ' is-active' : ''}" href="${href}">
-  ${avatar}<span class="messenger-contact-copy"><b>${esc(name)}</b><span>${esc(subtitle || '')}</span><em>${esc(preview || '')}</em></span>
-  <span class="messenger-contact-meta">${time ? `<time>${esc(relTime(time))}</time>` : ''}${unread ? `<i>${unread > 9 ? '9+' : unread}</i>` : ''}</span>
+const messengerContact = ({ href, avatar, name, subtitle, preview, time, unread = 0, active = false }) => `<a class="messenger-contact${active ? ' is-active' : ''}${unread ? ' is-unread' : ''}" href="${href}">
+  ${avatar}<span class="messenger-contact-copy"><b>${esc(name)}</b><span>${esc(subtitle || '')}</span><em><span class="mc-preview">${esc(preview || '')}</span>${time ? `<time>${esc(messengerTime(time))}</time>` : ''}</em></span>
+  ${unread ? `<span class="messenger-contact-meta"><i aria-label="${unread} message${unread > 1 ? 's' : ''} non lu${unread > 1 ? 's' : ''}"></i></span>` : ''}
 </a>`;
 const messengerPageHeading = (title) => `<div class="messenger-heading"><h1>${title}</h1></div>`;
-const messengerSearch = (action, value = '') => `<form class="messenger-search" method="get" action="${action}"><input name="q" value="${esc(value)}" placeholder="Recherche" aria-label="Rechercher"/></form>`;
+const messengerSearch = (action, value = '') => `<form class="messenger-search" method="get" action="${action}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input name="q" value="${esc(value)}" placeholder="Rechercher" aria-label="Rechercher"/></form>`;
 
 r.get('/messages', need('student'), H(async (req, res) => {
   const adminContact = await db.prepare(`SELECT u.id, u.role, u.first_name, u.last_name, u.email, a.department,
@@ -1067,7 +1083,7 @@ r.get('/messages', need('student'), H(async (req, res) => {
   const list = !search || searchableAdmin.includes(search.toLowerCase())
     ? messengerContact({
       href: url('/messages', { ...req.ctx, conversation: 'admin' }), avatar, name,
-      subtitle, preview: previewMessage(rows, 'Extrait du dernier message'),
+      subtitle, preview: previewMessage(rows, 'Aucun message pour le moment', 'student'),
       time: last?.created_at, unread,
       active: selected,
     })
@@ -1083,6 +1099,7 @@ r.get('/messages', need('student'), H(async (req, res) => {
     : `<section class="messenger-shell messenger-inbox-page">
         ${messengerPageHeading('Message')}
         ${messengerSearch(url('/messages', req.ctx), search)}
+        <a class="messenger-story" href="${url('/messages', { ...req.ctx, conversation: 'admin' })}">${messageAvatar(adminContact, req.ctx)}<span class="messenger-story-name">${esc(name)}</span></a>
         <div class="messenger-contact-list">${list}</div>
         <form class="messenger-compat-fields" aria-hidden="true"><span class="pb-send">Envoyer un message</span><input type="hidden" name="subject" value="Conversation"/><input type="hidden" name="body" value=""/></form>
       </section>`;
@@ -1338,7 +1355,7 @@ r.get('/admin/messages', need('admin'), H(async (req, res) => {
         avatar: messageAvatar(c, req.ctx),
         name: messageDisplayName(c, 'Étudiant'),
         subtitle: [c.program, c.level].filter(Boolean).join(' · ') || c.email,
-        preview: previewMessage(rows, 'Extrait du dernier message'),
+        preview: previewMessage(rows, 'Aucun message pour le moment', 'admin'),
         time: last?.created_at, unread,
       });
     }).join('')
